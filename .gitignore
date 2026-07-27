@@ -1,0 +1,48 @@
+# ── 依赖 ──
+node_modules/
+
+# ── 构建产物与本机启动入口 ──
+*.apk
+安装包/
+*.desktop
+equipment-system/web/downloads/
+
+# ── 运行期数据（含密码哈希与真实台账数据，绝不入库）──
+# equipment.db 是生产数据；equipment-before-*.db 是改动前的手工备份。
+# 备份策略见 DEVGUIDE §6.6，靠文件系统备份，不靠 git。
+equipment-system/data/*.db
+equipment-system/data/*.db-wal
+equipment-system/data/*.db-shm
+equipment-system/data/*.db-journal
+equipment-system/data/*.log
+equipment-system/data/*.pid
+# 现场照片：真实生产数据，和数据库一样靠文件系统备份，不进版本控制
+equipment-system/data/attachments/
+
+# ── 原始业务资料（可能包含真实设备与内部需求信息）──
+/*.pdf
+/优胜美设备管理系统全新建设需求说明书_V1.1.txt
+/流程优化评估报告.md
+equipment-system/资料整理/
+
+# ── 日志与临时文件 ──
+*.log
+*.pid
+*.bak
+*.tmp
+
+# ── Excel 编辑时产生的锁文件 ──
+~$*.xlsx
+~$*.xls
+
+# ── 系统与编辑器 ──
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# ── 测试与覆盖率产物 ──
+coverage/
+.nyc_output/

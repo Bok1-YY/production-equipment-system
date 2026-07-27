@@ -1,0 +1,14 @@
+# 仓库根目录的 .gitignore 已覆盖全部规则，这份是防御性的第二道保险：
+# 万一将来有人单独在 equipment-system/ 里 git init，数据和依赖仍然不会入库。
+node_modules/
+
+data/*.db
+data/*.db-*
+data/*.log
+data/*.pid
+data/attachments/
+
+coverage/
+.DS_Store
+*.bak
+~$*.xlsx

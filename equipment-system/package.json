@@ -1,0 +1,21 @@
+{
+  "name": "ysm-equipment-system",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "优胜美设备编码、产线组合变动与维修闭环首期系统",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "generate:templates": "node scripts/generate-templates.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "qrcode": "^1.5.4"
+  }
+}

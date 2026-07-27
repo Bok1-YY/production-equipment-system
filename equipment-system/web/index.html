@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>优胜美设备管理</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">YS</div>
+      <div><strong>优胜美设备管理</strong><span>设备编码 · 产线组合 · 变动追溯</span></div>
+    </div>
+    <div class="identity" id="identity" hidden>
+      <div class="identity-user"><strong id="identity-name"></strong><span id="identity-level"></span></div>
+      <button class="secondary small" id="open-change-password">修改密码</button>
+      <button class="secondary small" id="logout">退出</button>
+    </div>
+  </header>
+
+  <div class="auth-gate" id="auth-gate" hidden>
+    <form class="card auth-card" id="login-form">
+      <div class="brand-mark">YS</div>
+      <h1>优胜美设备管理</h1>
+      <p class="hint">请使用管理员分配的工号登录。设备报修、维修处理与台账管理都需要实名登录。</p>
+      <label>工号<input name="username" id="login-username" autocomplete="username" required></label>
+      <label>密码<input type="password" name="password" autocomplete="current-password" required></label>
+      <button type="submit">登录</button>
+      <p class="hint" id="login-hint">忘记密码请联系管理员重置。</p>
+    </form>
+
+    <form class="card auth-card" id="first-password-form" hidden>
+      <div class="brand-mark">YS</div>
+      <h1>请先修改密码</h1>
+      <p class="hint">初始密码和管理员重置的密码只能用一次。改密之后才能使用系统。</p>
+      <label>当前密码<input type="password" name="old_password" autocomplete="current-password" required></label>
+      <label>新密码<input type="password" name="new_password" autocomplete="new-password" minlength="8" required></label>
+      <label>确认新密码<input type="password" name="confirm_password" autocomplete="new-password" minlength="8" required></label>
+      <button type="submit">保存新密码</button>
+      <button type="button" class="secondary" id="cancel-first-password">退出登录</button>
+    </form>
+  </div>
+
+  <div class="shell">
+    <nav class="sidebar" aria-label="主导航">
+      <button class="nav-item active" data-view="dashboard" data-min-level="2">总览</button>
+      <button class="nav-item" data-view="repairs" data-min-level="1">维修报修</button>
+      <button class="nav-item" data-view="patrol" data-min-level="2">设备巡检</button>
+      <button class="nav-item" data-view="equipment" data-min-level="2">设备台账</button>
+      <button class="nav-item" data-view="structure" data-min-level="2">产线组合</button>
+      <button class="nav-item" data-view="changes" data-min-level="3">设备变动</button>
+      <button class="nav-item" data-view="reviews" data-min-level="3">服务评价</button>
+      <button class="nav-item" data-view="fault-codes" data-min-level="3">故障代码</button>
+      <button class="nav-item" data-view="members" data-min-level="3">成员管理</button>
+      <button class="nav-item" data-view="logs" data-min-level="3">操作日志</button>
+    </nav>
+
+    <main>
+      <div id="flash" role="status"></div>
+
+      <section class="view active" id="view-dashboard">
+        <div class="page-title"><div><p class="eyebrow">运行概况</p><h1>设备管理总览</h1></div><button class="secondary" data-refresh="dashboard">刷新</button></div>
+        <div class="metrics" id="metrics"></div>
+        <div class="card my-review" id="my-review-card" hidden></div>
+        <div class="card getting-started">
+          <div>
+            <p class="eyebrow">建议顺序</p>
+            <h2>先建位置，再建设备，然后提交安装申请</h2>
+            <p>产线、工序、机位描述生产结构；永久设备码描述设备本体。所有装卸移动均经设备科确认后生效。</p>
+          </div>
+          <ol><li>创建产线、工序与机位</li><li>录入独立设备，系统自动分配永久码</li><li>提交安装或移动申请</li><li>审核后形成可追溯的产线组合</li></ol>
+        </div>
+      </section>
+
+      <section class="view" id="view-equipment">
+        <div class="page-title"><div><p class="eyebrow">永久资产身份</p><h1>设备台账</h1></div><div class="toolbar"><a class="button-link" href="/api/templates/equipment/download" data-min-level="3" download>下载Excel模板</a><label class="button-link file-button" data-min-level="3">批量导入<input type="file" id="equipment-import" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label><button class="secondary" data-min-level="3" onclick="openLabelBatch()">批量打印铭牌</button><input id="equipment-search" placeholder="搜索编码、名称或别名"><button class="secondary" id="search-equipment">搜索</button></div></div>
+        <div class="split">
+          <form class="card form-card" id="equipment-form" data-min-level="3">
+            <h2>新建设备</h2>
+            <p class="hint">设备码按“类型＋关键规格”自动生成，产线变化不会改变编码。</p>
+            <label>标准设备名称*<input name="standard_name" required placeholder="例如：单螺杆挤出机"></label>
+            <div class="form-row"><label>设备类型*<select name="type_code" id="equipment-type" required></select></label><label>关键规格<input name="key_spec" id="equipment-key-spec" placeholder="例如：135、H800-C2500"></label></div>
+            <div class="code-preview"><span>编码格式预览</span><strong id="equipment-code-preview">请选择设备类型</strong><button type="button" class="secondary small" id="manage-equipment-types">管理类型</button></div>
+            <label>现场别名<input name="alias" placeholder="例如：1号主挤出机"></label>
+            <label>设备类别*<input name="category" required placeholder="例如：生产主机"></label>
+            <div class="form-row"><label>品牌<input name="brand"></label><label>型号<input name="model"></label></div>
+            <label>出厂编号<input name="serial_number"></label>
+            <div class="form-row"><label>负责人<input name="responsible_person"></label><label>启用日期<input type="date" name="commissioned_on"></label></div>
+            <label>原资产编号<input name="legacy_code"></label>
+            <label class="check"><input type="checkbox" name="critical">关键设备</label>
+            <label class="check"><input type="checkbox" name="verified">资料已核实</label>
+            <label>备注<textarea name="notes" rows="3"></textarea></label>
+            <button type="submit">生成永久设备码</button>
+          </form>
+          <div class="card table-card"><div class="card-head"><h2>设备清单</h2><span id="equipment-count" class="pill"></span></div><div class="table-wrap"><table><thead><tr><th>设备编码</th><th>名称</th><th>状态</th><th>类型/规格</th><th>类别</th><th>当前位置</th><th>核实</th><th>操作</th></tr></thead><tbody id="equipment-body"></tbody></table></div></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-structure">
+        <div class="page-title"><div><p class="eyebrow">车间 → 产线 → 工序 → 机位 → 当前设备</p><h1>产线组合树</h1></div><div class="toolbar"><button id="add-workshop" data-min-level="3">新增车间</button><a class="button-link" href="/api/templates/line-composition/download" data-min-level="3" download>下载组合模板</a><label class="button-link file-button" data-min-level="3">导入组合<input type="file" id="composition-import" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label><a class="button-link" href="/api/exports/line-composition.xlsx" download>导出当前组合</a><button class="secondary" id="refresh-tree">刷新</button></div></div>
+        <div class="card tree-card">
+          <div class="card-head"><div><h2>全厂设备结构</h2><p class="hint">点击箭头展开；使用节点右侧按钮新增、编辑或安装设备。</p></div><span id="tree-summary" class="pill"></span></div>
+          <div id="organization-tree" class="organization-tree"><div class="empty">正在加载结构……</div></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-changes">
+        <div class="page-title"><div><p class="eyebrow">生产主管提交 · 设备科确认</p><h1>设备变动</h1></div></div>
+        <div class="split narrow-left">
+          <form class="card form-card" id="change-form">
+            <h2>提交变动申请</h2>
+            <label>变动类型<select name="action" id="change-action"><option value="INSTALL">安装</option><option value="MOVE">移动</option><option value="REMOVE">拆除</option><option value="REPLACE">替换</option></select></label>
+            <label>当前/被替换设备<div class="equip-picker" data-picker="change"><input type="search" data-picker-search placeholder="搜设备编号、现场名称或类型" autocomplete="off"><div class="form-row"><select data-picker-workshop aria-label="车间"></select><select data-picker-line aria-label="产线"></select></div><select name="equipment_id" id="change-equipment" data-picker-equipment></select></div></label>
+            <label id="replacement-wrap" hidden>替换后的设备<div class="equip-picker" data-picker="replacement"><input type="search" data-picker-search placeholder="搜设备编号、现场名称或类型" autocomplete="off"><div class="form-row"><select data-picker-workshop aria-label="车间"></select><select data-picker-line aria-label="产线"></select></div><select name="replacement_equipment_id" id="replacement-equipment" data-picker-equipment></select></div></label>
+            <label id="to-position-wrap">目标机位<select name="to_position_id" id="change-position"></select></label>
+            <label>实际生效时间<input type="datetime-local" name="effective_at" id="change-effective"></label>
+            <label>变动原因*<textarea name="reason" required rows="3"></textarea></label>
+            <button>提交设备科确认</button>
+          </form>
+          <div class="card table-card"><div class="card-head"><h2>变动申请</h2><span class="hint">审核时再次校验现场状态</span></div><div id="change-list" class="stack-list"></div></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-repairs">
+        <div class="page-title"><div><p class="eyebrow" id="repair-eyebrow">报修 · 抢单维修 · 验收结单</p><h1 id="repair-title">维修工单</h1></div><button class="secondary" data-refresh="repairs">刷新</button></div>
+        <div class="split narrow-left" id="repair-layout">
+          <form class="card form-card" id="repair-form">
+            <h2>提交报修</h2>
+            <p class="hint">扫设备上的二维码最快：设备和工序都会自动填好。说清哪里不对劲就能提交，故障分类由技术员到场后确认。</p>
+            <label>哪台设备<div class="equip-picker" data-picker="repair"><input type="search" data-picker-search placeholder="搜设备编号、现场名称或类型" autocomplete="off"><div class="form-row"><select data-picker-workshop aria-label="车间"></select><select data-picker-line aria-label="产线"></select></div><select name="equipment_id" id="repair-equipment" data-picker-equipment></select></div></label>
+            <label id="repair-process-label" hidden>所属工序*<select name="process_id" id="repair-process"></select>
+              <small class="hint" id="repair-process-hint">这台设备还没登记安装位置，请选它在哪道工序上。</small></label>
+            <label id="repair-description-label">哪里不对劲*<textarea name="description" id="repair-description" rows="3" required placeholder="例如：3号挤出机不出料了，刚才还是好的"></textarea></label>
+            <div class="photo-field">
+              <div class="photo-field-head"><span>现场照片<em id="repair-photo-required" hidden>（此故障必须拍照）</em></span><label class="button-link file-button small">拍照/选图<input type="file" accept="image/*" capture="environment" multiple data-photo-input="repair"></label></div>
+              <div class="photo-grid" data-photo-grid="repair"></div>
+              <p class="hint">拍一张最能说明问题，技术员到场前就能准备好工具和备件。</p>
+            </div>
+            <div class="quick-fault" id="quick-fault-wrap" hidden>
+              <div class="photo-field-head compact"><span>常见故障<em>选填，说得准就点一下</em></span><button type="button" class="button-link small" id="quick-fault-clear" hidden>取消选择</button></div>
+              <div class="quick-fault-grid" id="quick-fault-grid"></div>
+            </div>
+            <details class="fold" id="fault-fold">
+              <summary>都不是？展开完整故障分类</summary>
+              <div class="form-row"><label>故障类别<select id="fault-category"></select></label><label>故障部位<select id="fault-part"></select></label></div>
+              <label>故障现象<select name="fault_code_id" id="fault-symptom"></select></label>
+              <p class="hint fault-tip" id="fault-tip" hidden></p>
+            </details>
+            <details class="fold">
+              <summary>更多（位置、紧急程度）</summary>
+              <label>具体位置<input name="fault_location" placeholder="例如：机头右侧、2号工位"></label>
+              <div class="form-row"><label>紧急程度<select name="urgency" id="repair-urgency"><option value="NORMAL">一般</option><option value="URGENT">紧急</option><option value="CRITICAL">特急</option></select></label><label class="check bottom"><input type="checkbox" name="is_downtime" id="repair-downtime">导致停机</label></div>
+            </details>
+            <button>提交报修</button>
+          </form>
+          <div class="card table-card"><div class="card-head"><h2 id="work-order-list-title">工单列表</h2><span class="hint" id="work-order-list-hint">点击工单查看和处理</span></div><div id="work-order-list" class="stack-list"></div></div>
+        </div>
+        <div class="drawer" id="work-order-drawer" hidden><div class="drawer-backdrop" data-close-drawer></div><div class="drawer-panel"><button class="drawer-close" data-close-drawer>×</button><div id="work-order-detail"></div></div></div>
+      </section>
+
+      <section class="view" id="view-reviews">
+        <div class="page-title"><div><p class="eyebrow">报修人打分 · 技术员只看得到自己的综合分</p><h1>服务评价</h1></div><button class="secondary" data-refresh="reviews">刷新</button></div>
+        <div class="card table-card"><div class="card-head"><h2>技术员评分</h2><span class="hint">按综合分排序</span></div><div id="technician-ranking"></div></div>
+        <div class="card table-card" style="margin-top:16px"><div class="card-head"><h2>全部评价</h2><span id="review-count" class="pill"></span></div><div id="review-list" class="stack-list"></div></div>
+      </section>
+
+      <section class="view" id="view-patrol">
+        <div class="page-title"><div><p class="eyebrow">到现场转一圈 · 拍照留痕 · 有问题转维修</p><h1>设备巡检</h1></div><button class="secondary" data-refresh="patrol">刷新</button></div>
+        <div class="split narrow-left">
+          <form class="card form-card" id="patrol-form">
+            <h2>登记巡检</h2>
+            <p class="hint">扫设备铭牌二维码可直接带出设备。写清楚看到了什么、做了什么处理，别人才看得懂。</p>
+            <label>巡检设备*<div class="equip-picker" data-picker="patrol"><input type="search" data-picker-search placeholder="搜设备编号、现场名称或类型" autocomplete="off"><div class="form-row"><select data-picker-workshop aria-label="车间"></select><select data-picker-line aria-label="产线"></select></div><select name="equipment_id" id="patrol-equipment" data-picker-equipment required></select></div></label>
+            <label>发现的问题与处理*
+              <textarea name="findings" id="patrol-findings" rows="4" required placeholder="例如：机头下方有轻微渗油，已擦净并紧固接头，继续观察"></textarea>
+            </label>
+            <div class="quick-fills"><button type="button" class="secondary small" data-quick-fill="运行正常，无异常">运行正常</button><button type="button" class="secondary small" data-quick-fill="已按点润滑保养">已润滑保养</button><button type="button" class="secondary small" data-quick-fill="已紧固松动部位">已紧固</button></div>
+            <label class="check"><input type="checkbox" name="has_issue" id="patrol-has-issue">发现问题，需要跟进</label>
+            <div class="photo-field">
+              <div class="photo-field-head"><span>现场照片</span><label class="button-link file-button small">拍照/选图<input type="file" accept="image/*" capture="environment" multiple data-photo-input="patrol"></label></div>
+              <div class="photo-grid" data-photo-grid="patrol"></div>
+            </div>
+            <button>提交巡检记录</button>
+          </form>
+          <div class="card table-card"><div class="card-head"><h2>巡检记录</h2><span id="patrol-count" class="pill"></span></div><div id="patrol-list" class="stack-list"></div></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-fault-codes">
+        <div class="page-title"><div><p class="eyebrow">故障类别 → 故障部位 → 故障现象</p><h1>故障代码</h1></div><div class="toolbar"><button id="add-fault-code">新增故障代码</button><button class="secondary" data-refresh="fault-codes">刷新</button></div></div>
+        <div class="card seeded-notice" id="fault-seeded-notice" hidden>
+          <strong>系统预置，待设备科确认</strong>
+          <p>下面标着「待确认」的故障代码是参考旧系统整理的建议值，不是现场确认过的标准。请设备科核对后增删修改——报修人只能从这个列表里选，列表不准会直接影响故障统计。</p>
+        </div>
+        <div id="fault-code-groups"></div>
+      </section>
+
+      <section class="view" id="view-members">
+        <div class="page-title"><div><p class="eyebrow">普工报修 · 技术员维修 · 管理员验收</p><h1>成员管理</h1></div><div class="toolbar"><button id="add-member">新增成员</button><button class="secondary" data-refresh="members">刷新</button></div></div>
+        <div class="card level-guide">
+          <div><span class="level-badge level-1">一级</span><strong>普工</strong><p>扫码或选工序报修，查看自己报修的工单进度。</p></div>
+          <div><span class="level-badge level-2">二级</span><strong>技术员</strong><p>在待接单池抢单，处理维修全过程并记录零件；不能自行结单。</p></div>
+          <div><span class="level-badge level-3">三级</span><strong>管理员</strong><p>验收结单、设备台账、产线组合、变动审核与成员管理。</p></div>
+        </div>
+        <div class="card table-card"><div class="card-head"><h2>成员清单</h2><span id="member-count" class="pill"></span></div><div class="table-wrap"><table><thead><tr><th>工号</th><th>姓名</th><th>级别</th><th>状态</th><th>最近活动</th><th>操作</th></tr></thead><tbody id="member-body"></tbody></table></div></div>
+      </section>
+
+      <section class="view" id="view-logs">
+        <div class="page-title"><div><p class="eyebrow">不可省略的追溯链</p><h1>操作审计日志</h1></div><button class="secondary" data-refresh="logs">刷新</button></div>
+        <div class="card table-card"><div class="table-wrap"><table><thead><tr><th>时间</th><th>操作人</th><th>对象</th><th>动作</th><th>记录编号</th></tr></thead><tbody id="audit-body"></tbody></table></div></div>
+      </section>
+    </main>
+  </div>
+
+  <button class="native-scan-button" id="native-scan-button" type="button" hidden aria-label="扫描设备铭牌">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4M7 12h10"/>
+    </svg>
+    <span>扫码</span>
+  </button>
+
+  <template id="metric-template"><article class="metric card"><span></span><strong></strong><small></small></article></template>
+  <script src="/scanner-utils.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

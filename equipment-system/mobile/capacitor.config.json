@@ -1,0 +1,11 @@
+{
+  "appId": "com.ysm.equipment.mobiletest",
+  "appName": "优胜美设备管理（测试）",
+  "webDir": "www",
+  "loggingBehavior": "debug",
+  "server": {
+    "url": "http://127.0.0.1:8788",
+    "cleartext": true,
+    "errorPath": "offline.html"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "ysm-equipment-mobile-test",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "优胜美设备管理系统安卓局域网测试壳",
+  "scripts": {
+    "sync": "cap sync android",
+    "android": "cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.4.0",
+    "@capacitor/barcode-scanner": "3.1.0",
+    "@capacitor/core": "8.4.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.4.0"
+  }
+}

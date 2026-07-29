@@ -1,10 +1,17 @@
 apply plugin: 'com.android.application'
 
+def ysmEnv = System.getenv()
+def ysmReleaseStore = ysmEnv['YSM_ANDROID_KEYSTORE']
+def ysmReleaseSigningReady = ysmReleaseStore &&
+    ysmEnv['YSM_ANDROID_KEYSTORE_PASSWORD'] &&
+    ysmEnv['YSM_ANDROID_KEY_ALIAS'] &&
+    ysmEnv['YSM_ANDROID_KEY_PASSWORD']
+
 android {
     namespace = "com.ysm.equipment.mobiletest"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.ysm.equipment.mobiletest"
+        applicationId ysmEnv['YSM_ANDROID_APPLICATION_ID'] ?: "com.ysm.equipment.mobiletest"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode = providers.gradleProperty("ysmVersionCode").getOrElse("1").toInteger()
@@ -16,10 +23,29 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (ysmReleaseSigningReady) {
+                storeFile file(ysmReleaseStore)
+                storePassword ysmEnv['YSM_ANDROID_KEYSTORE_PASSWORD']
+                keyAlias ysmEnv['YSM_ANDROID_KEY_ALIAS']
+                keyPassword ysmEnv['YSM_ANDROID_KEY_PASSWORD']
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
+                enableV4Signing true
+            }
+        }
+    }
     buildTypes {
+        debug {
+            manifestPlaceholders = [ysmUsesCleartextTraffic: "true"]
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            manifestPlaceholders = [ysmUsesCleartextTraffic: "false"]
+            if (ysmReleaseSigningReady) signingConfig signingConfigs.release
         }
     }
 }

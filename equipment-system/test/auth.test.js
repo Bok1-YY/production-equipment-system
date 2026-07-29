@@ -73,7 +73,7 @@ test('默认管理员首次登录必须改密，改密前后凭据切换正确',
   assert.throws(() => service.login('不存在的账号', DEFAULT_ADMIN_PASSWORD), /工号或密码不正确/);
 
   assert.throws(() => service.changeOwnPassword(loggedIn.id, '错误的原密码', 'manager-2026'), /原密码不正确/);
-  assert.throws(() => service.changeOwnPassword(loggedIn.id, DEFAULT_ADMIN_PASSWORD, 'abc'), /至少需要8位/);
+  assert.throws(() => service.changeOwnPassword(loggedIn.id, DEFAULT_ADMIN_PASSWORD, 'abc'), /至少需要12位/);
   assert.throws(() => service.changeOwnPassword(loggedIn.id, DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_PASSWORD), /不能与原密码相同/);
 
   const changed = service.changeOwnPassword(loggedIn.id, DEFAULT_ADMIN_PASSWORD, 'manager-2026');
@@ -124,7 +124,7 @@ test('管理员开户返回一次性初始密码，且任何接口都不回传�
   const created = service.createUser({ username: 'W002', display_name: '普工王五', level: 1, phone: '13800000000' }, manager);
   assert.equal(created.username, 'w002', '工号统一转小写');
   assert.equal(created.must_change_password, 1);
-  assert.match(created.initial_password, /^ysm[a-z0-9]{10}$/);
+  assert.match(created.initial_password, /^ysm[a-z0-9]{14}$/);
   assert.equal(service.login('w002', created.initial_password).id, created.id);
 
   for (const item of [service.publicUser(created.id), ...service.listUsers()]) {
@@ -143,7 +143,7 @@ test('重置密码会强制改密并踢掉旧会话，最后一个管理员不�
   const { db, service, manager, technician, faultCode } = fixture();
   const technicianSession = createSession(db, technician.user_id);
   const reset = service.resetUserPassword(technician.user_id, manager);
-  assert.match(reset.initial_password, /^ysm[a-z0-9]{10}$/);
+  assert.match(reset.initial_password, /^ysm[a-z0-9]{14}$/);
   assert.equal(reset.must_change_password, 1);
   assert.equal(resolveSession(db, technicianSession.token), null, '重置密码后旧会话必须失效');
   assert.equal(service.login('t001', reset.initial_password).id, technician.user_id);

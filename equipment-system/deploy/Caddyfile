@@ -1,0 +1,32 @@
+{
+	email {$ACME_EMAIL}
+	admin off
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	@blocked path /.git/* /.env* /data/* /mobile/* /test/* /downloads/* /手机安装.html
+	respond @blocked 404
+
+	reverse_proxy app:8787 {
+		header_up Host {host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-For {remote_host}
+		health_uri /api/health/ready
+	}
+
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

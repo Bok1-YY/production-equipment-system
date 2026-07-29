@@ -17,6 +17,7 @@ function fixture() {
   const seed = service.listUsers().find((item) => item.username === DEFAULT_ADMIN_USERNAME);
   service.changeOwnPassword(seed.id, DEFAULT_ADMIN_PASSWORD, 'manager-2026');
   const manager = contextFor(service.publicUser(seed.id));
+  const reviewer = contextFor(service.createUser({ username: 'm002', display_name: '审核管理员', level: 3 }, manager));
   const worker = contextFor(service.createUser({ username: 'w001', display_name: '普工李四', level: 1 }, manager));
   const technician = contextFor(service.createUser({ username: 't001', display_name: '技术员张三', level: 2 }, manager));
 
@@ -32,13 +33,13 @@ function fixture() {
   const approve = (input) => {
     service.createCompositionChange(input, manager);
     const change = service.listCompositionChanges()[0];
-    return service.reviewCompositionChange(change.id, { decision: 'APPROVED' }, manager);
+    return service.reviewCompositionChange(change.id, { decision: 'APPROVED' }, reviewer);
   };
   approve({ action: 'INSTALL', equipment_id: equipment.id, to_position_id: first.id, reason: '初始安装' });
   approve({ action: 'MOVE', equipment_id: equipment.id, to_position_id: second.id, reason: '产线调整搬到备用机位' });
 
   const faultCode = service.listFaultCodes().codes.find((item) => item.code === 'ME-BRG-NOISE');
-  return { db, service, manager, worker, technician, process, first, second, equipment, faultCode };
+  return { db, service, manager, reviewer, worker, technician, process, first, second, equipment, faultCode };
 }
 
 test('设备履历汇总位置变动、维修工单、零件、档案修改和统计', () => {
@@ -55,7 +56,7 @@ test('设备履历汇总位置变动、维修工单、零件、档案修改和�
   }
   service.updateRepairDetail(id, {
     diagnosis: '主接触器触点烧结', root_cause: '触点老化', repair_action: '更换接触器',
-    trial_result: '空载试运行正常', downtime_minutes: 95,
+    trial_result: '空载试运行正常', downtime_minutes: 95, downtime_override_reason: '按现场停机记录修正',
   }, technician);
   service.addWorkOrderPart(id, { part_name: '交流接触器', specification: 'CJX2-2510', quantity: 1, unit: '只' }, technician);
   service.addWorkOrderPart(id, { part_name: '熔断器', quantity: 2, unit: '只' }, technician);
@@ -114,7 +115,7 @@ test('设备履历汇总位置变动、维修工单、零件、档案修改和�
 });
 
 test('被替换下来的旧设备，履历里也能看到那次替换', () => {
-  const { db, service, manager, equipment, second, faultCode } = fixture();
+  const { db, service, manager, reviewer, equipment, second, faultCode } = fixture();
   const replacement = service.createEquipment({
     standard_name: '备用挤出机', category: '生产主机', type_code: 'EXT', key_spec: '135',
   }, manager);
@@ -122,7 +123,7 @@ test('被替换下来的旧设备，履历里也能看到那次替换', () => {
     action: 'REPLACE', equipment_id: equipment.id, replacement_equipment_id: replacement.id, reason: '主机大修换备机',
   }, manager);
   const change = service.listCompositionChanges()[0];
-  service.reviewCompositionChange(change.id, { decision: 'APPROVED' }, manager);
+  service.reviewCompositionChange(change.id, { decision: 'APPROVED' }, reviewer);
 
   const oldHistory = service.equipmentHistory(equipment.id);
   assert.ok(oldHistory.changes.some((item) => item.action === 'REPLACE'), '被换下来的设备要看得到这次替换');

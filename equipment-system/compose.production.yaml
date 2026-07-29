@@ -1,0 +1,113 @@
+name: ysm-equipment-system
+
+services:
+  app:
+    image: ${APP_IMAGE:?APP_IMAGE is required}
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "8787"
+      YSM_DB_PATH: /data/equipment.db
+      PUBLIC_BASE_URL: https://${DOMAIN:?DOMAIN is required}
+      YSM_TRUSTED_ORIGIN: https://${DOMAIN}
+      YSM_TRUST_PROXY: "1"
+      YSM_SECURE_COOKIE: "1"
+      YSM_LOGIN_MAX_FAILURES: "5"
+      YSM_LOGIN_LOCK_MINUTES: "15"
+      YSM_LOGIN_IP_MAX_FAILURES: "30"
+      YSM_COMPANY_NAME: ${COMPANY_NAME:-优胜美}
+      YSM_COMPANY_CONTACT: ${COMPANY_CONTACT:-}
+      YSM_PRIVACY_URL: ${PRIVACY_URL:-}
+      YSM_ICP_RECORD: ${ICP_RECORD:-}
+      YSM_PUBLIC_SECURITY_RECORD: ${PUBLIC_SECURITY_RECORD:-}
+      YSM_APP_RECORD: ${APP_RECORD:-}
+    expose:
+      - "8787"
+    volumes:
+      - type: bind
+        source: /srv/ysm/data
+        target: /data
+    networks:
+      - backend
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8787/api/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  backup:
+    profiles:
+      - ops
+    image: ${APP_IMAGE:?APP_IMAGE is required}
+    command:
+      - node
+      - scripts/backup-production.js
+      - /backups
+    environment:
+      NODE_ENV: production
+      YSM_DB_PATH: /data/equipment.db
+      YSM_BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - type: bind
+        source: /srv/ysm/data
+        target: /data
+      - type: bind
+        source: /srv/ysm/backups
+        target: /backups
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  caddy:
+    image: caddy:2.10-alpine
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - backend
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  backend:
+    internal: false
+
+volumes:
+  caddy_data:
+  caddy_config:

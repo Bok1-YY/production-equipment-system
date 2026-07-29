@@ -3,7 +3,6 @@ package com.ysm.equipment.mobiletest;
 import android.Manifest;
 import android.content.Intent;
 import android.os.Build;
-import android.webkit.CookieManager;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
@@ -21,6 +20,7 @@ import com.getcapacitor.annotation.PermissionCallback;
 )
 public class RepairNotificationsPlugin extends Plugin {
     private static final String USER_ID = "userId";
+    private static final String NOTIFICATION_TOKEN = "notificationToken";
 
     @PluginMethod
     public void startMonitoring(PluginCall call) {
@@ -46,17 +46,17 @@ public class RepairNotificationsPlugin extends Plugin {
 
     private void startService(PluginCall call) {
         String serverUrl = getBridge().getServerUrl();
-        String cookie = serverUrl == null ? null : CookieManager.getInstance().getCookie(serverUrl);
+        String token = call.getString(NOTIFICATION_TOKEN, "");
         int userId = call.getInt(USER_ID, 0);
-        if (serverUrl == null || serverUrl.isBlank() || cookie == null || cookie.isBlank() || userId <= 0) {
-            call.reject("登录会话尚未准备好，暂时无法开启报修通知");
+        if (serverUrl == null || serverUrl.isBlank() || token == null || token.isBlank() || userId <= 0) {
+            call.reject("通知令牌尚未准备好，暂时无法开启报修通知");
             return;
         }
 
         Intent intent = new Intent(getContext(), RepairNotificationService.class);
         intent.setAction(RepairNotificationService.ACTION_START);
         intent.putExtra(RepairNotificationService.EXTRA_SERVER_URL, serverUrl);
-        intent.putExtra(RepairNotificationService.EXTRA_COOKIE, cookie);
+        intent.putExtra(RepairNotificationService.EXTRA_NOTIFICATION_TOKEN, token);
         intent.putExtra(RepairNotificationService.EXTRA_USER_ID, userId);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getContext().startForegroundService(intent);

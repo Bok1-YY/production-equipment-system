@@ -39,7 +39,7 @@ function repairAndClose(f, tech = f.technician, reporter = f.worker) {
   for (const status of ['ARRIVED', 'IN_PROGRESS']) {
     f.service.transitionWorkOrder(id, { to_status: status }, tech);
   }
-  f.service.updateRepairDetail(id, { trial_result: '空载试运行正常' }, tech);
+  f.service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '空载试运行正常' }, tech);
   f.service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, tech);
   f.service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, tech);
   return id;
@@ -56,7 +56,7 @@ test('技术员现在能自己结单，试运行完直通完成，不再需要�
   for (const status of ['ARRIVED', 'IN_PROGRESS']) {
     f.service.transitionWorkOrder(id, { to_status: status }, f.technician);
   }
-  f.service.updateRepairDetail(id, { trial_result: '正常' }, f.technician);
+  f.service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '正常' }, f.technician);
   f.service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, f.technician);
 
   const closed = f.service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, f.technician);
@@ -91,7 +91,7 @@ test('工单没挂设备就结不了单——否则维修记录落不到任何�
   for (const status of ['ARRIVED', 'IN_PROGRESS']) {
     f.service.transitionWorkOrder(id, { to_status: status }, f.technician);
   }
-  f.service.updateRepairDetail(id, { trial_result: '正常' }, f.technician);
+  f.service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '正常' }, f.technician);
   f.service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, f.technician);
 
   assert.throws(() => f.service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, f.technician),
@@ -141,7 +141,7 @@ test('停在旧“待审核”状态的历史工单仍然结得掉', () => {
   for (const status of ['ARRIVED', 'IN_PROGRESS']) {
     f.service.transitionWorkOrder(id, { to_status: status }, f.technician);
   }
-  f.service.updateRepairDetail(id, { trial_result: '正常' }, f.technician);
+  f.service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '正常' }, f.technician);
   // 手工造出改造前才会出现的状态
   f.db.prepare("UPDATE work_orders SET status='PENDING_REVIEW' WHERE id=?").run(id);
   assert.doesNotThrow(() => f.service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, f.technician),

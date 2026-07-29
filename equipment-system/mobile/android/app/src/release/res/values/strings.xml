@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">优胜美设备管理</string>
+    <string name="title_activity_main">优胜美设备管理</string>
+    <string name="package_name">com.ysm.equipment</string>
+    <string name="custom_url_scheme">com.ysm.equipment</string>
+</resources>

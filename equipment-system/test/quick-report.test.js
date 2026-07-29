@@ -20,6 +20,7 @@ function fixture() {
   const seed = service.listUsers().find((item) => item.username === DEFAULT_ADMIN_USERNAME);
   service.changeOwnPassword(seed.id, DEFAULT_ADMIN_PASSWORD, 'manager-2026');
   const manager = contextFor(service.publicUser(seed.id));
+  const reviewer = contextFor(service.createUser({ username: 'm002', display_name: '审核管理员', level: 3 }, manager));
   const worker = contextFor(service.createUser({ username: 'w001', display_name: '普工李四', level: 1 }, manager));
   const technician = contextFor(service.createUser({ username: 't001', display_name: '技术员张三', level: 2 }, manager));
 
@@ -39,7 +40,7 @@ function fixture() {
     action: 'INSTALL', equipment_id: installed.id, to_position_id: position.id, reason: '初始安装',
   }, manager);
   const change = service.listCompositionChanges()[0];
-  service.reviewCompositionChange(change.id, { decision: 'APPROVED' }, manager);
+  service.reviewCompositionChange(change.id, { decision: 'APPROVED' }, reviewer);
 
   return { db, service, manager, worker, technician, process, installed, loose };
 }
@@ -140,7 +141,7 @@ test('没补故障码就结不了单', () => {
   for (const status of ['ARRIVED', 'IN_PROGRESS']) {
     service.transitionWorkOrder(created.id, { to_status: status }, technician);
   }
-  service.updateRepairDetail(created.id, { trial_result: '空转10分钟正常出料' }, technician);
+  service.updateRepairDetail(created.id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '空转10分钟正常出料' }, technician);
   service.transitionWorkOrder(created.id, { to_status: 'TRIAL_RUN' }, technician);
 
   assert.throws(() => service.transitionWorkOrder(created.id, { to_status: 'COMPLETED' }, technician),

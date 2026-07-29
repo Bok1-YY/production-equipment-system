@@ -16,6 +16,7 @@ function fixture() {
   const seed = service.listUsers().find((item) => item.username === DEFAULT_ADMIN_USERNAME);
   service.changeOwnPassword(seed.id, DEFAULT_ADMIN_PASSWORD, 'manager-2026');
   const manager = contextFor(service.publicUser(seed.id));
+  const reviewer = contextFor(service.createUser({ username: 'm002', display_name: '审核管理员', level: 3 }, manager));
   const worker = contextFor(service.createUser({ username: 'w001', display_name: '普工李四', level: 1 }, manager));
   const technician = contextFor(service.createUser({ username: 't001', display_name: '技术员张三', level: 2 }, manager));
   const workshop = service.organization().workshops[0];
@@ -26,7 +27,7 @@ function fixture() {
     standard_name: '单螺杆挤出机', category: '生产主机', type_code: 'EXT', key_spec: '135',
   }, manager);
   const faultCode = service.listFaultCodes().codes.find((item) => item.code === 'ME-BRG-NOISE');
-  return { db, service, manager, worker, technician, line, process, position, equipment, faultCode };
+  return { db, service, manager, reviewer, worker, technician, line, process, position, equipment, faultCode };
 }
 
 const statusOf = (service, id) => service.getEquipment(id).status;
@@ -58,7 +59,7 @@ test('报修两段联动：提交变已报修，开工变维修中，结单回�
   service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, technician);
   assert.equal(statusOf(service, equipment.id), 'REPAIRING', '开工后应变为维修中');
 
-  service.updateRepairDetail(id, { trial_result: '空载正常' }, technician);
+  service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '空载正常' }, technician);
   service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, technician);
   assert.equal(statusOf(service, equipment.id), 'REPAIRING', '试运行仍算维修中');
   assert.equal(statusOf(service, equipment.id), 'REPAIRING', '待审核仍算维修中');
@@ -87,7 +88,7 @@ test('同一设备多张工单时，关掉其中一张不会提前恢复', () =>
   repairUpTo(service, technician, first, 'IN_PROGRESS');
   assert.equal(statusOf(service, equipment.id), 'REPAIRING', '有一张开工了就算维修中');
 
-  service.updateRepairDetail(first, { trial_result: '异响消除' }, technician);
+  service.updateRepairDetail(first, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '异响消除' }, technician);
   service.transitionWorkOrder(first, { to_status: 'TRIAL_RUN' }, technician);
   service.transitionWorkOrder(first, { to_status: 'COMPLETED' }, technician);
   assert.equal(statusOf(service, equipment.id), 'REPORTED', '第二张还没结，应退回已报修而不是在用');
@@ -109,7 +110,7 @@ test('维修期间手工改状态改的是baseline，结单后才生效', () => 
   assert.equal(updated.status, 'REPAIRING', '维修期间手工修改不能冲掉维修中');
   assert.equal(updated.baseline_status, 'IDLE');
 
-  service.updateRepairDetail(id, { trial_result: '正常' }, technician);
+  service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '正常' }, technician);
   service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, technician);
   service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, technician);
   assert.equal(statusOf(service, equipment.id), 'IDLE', '结单后应落到手工选的闲置，而不是在用');
@@ -162,12 +163,12 @@ test('总览统计里能看到处于维修状态的设备数', () => {
 });
 
 test('产线组合树上能看到设备的维修状态', () => {
-  const { db, service, manager, worker, process, position, equipment, faultCode } = fixture();
+  const { db, service, manager, reviewer, worker, process, position, equipment, faultCode } = fixture();
   service.createCompositionChange({
     action: 'INSTALL', equipment_id: equipment.id, to_position_id: position.id, reason: '初始安装',
   }, manager);
   const change = service.listCompositionChanges()[0];
-  service.reviewCompositionChange(change.id, { decision: 'APPROVED' }, manager);
+  service.reviewCompositionChange(change.id, { decision: 'APPROVED' }, reviewer);
 
   const inTree = () => service.organizationTree()[0].workshops
     .flatMap((w) => w.lines).flatMap((l) => l.processes).flatMap((p) => p.positions)

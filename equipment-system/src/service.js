@@ -26,8 +26,11 @@ const { nextSequence, transaction } = require('./db');
 const { LEVELS, destroyUserSessions, hashPassword, normalizeLevel, verifyPassword } = require('./auth');
 const { FALLBACK_FAULT_CODE } = require('./fault-codes');
 
-const MIN_PASSWORD_LENGTH = 8;
+const MIN_PASSWORD_LENGTH = 12;
 const PASSWORD_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+const LOGIN_MAX_FAILURES = Math.max(1, Number(process.env.YSM_LOGIN_MAX_FAILURES) || 5);
+const LOGIN_LOCK_MINUTES = Math.max(1, Number(process.env.YSM_LOGIN_LOCK_MINUTES) || 15);
+const LOGIN_IP_MAX_FAILURES = Math.max(LOGIN_MAX_FAILURES, Number(process.env.YSM_LOGIN_IP_MAX_FAILURES) || 30);
 
 // 附件：现场照片。默认落在数据库旁边的 attachments/，测试可通过构造参数改到临时目录。
 const DEFAULT_DATA_DIR = process.env.YSM_DB_PATH && process.env.YSM_DB_PATH !== ':memory:'
@@ -36,7 +39,11 @@ const DEFAULT_DATA_DIR = process.env.YSM_DB_PATH && process.env.YSM_DB_PATH !== 
 const DEFAULT_ATTACHMENT_ROOT = path.join(DEFAULT_DATA_DIR, 'attachments');
 const MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_TARGET = 6;
-const ATTACHMENT_TARGETS = new Set(['WORK_ORDER', 'PATROL']);
+const MAX_ATTACHMENTS_TOTAL_BYTES = MAX_ATTACHMENT_BYTES * MAX_ATTACHMENTS_PER_TARGET;
+const ATTACHMENT_TARGETS = new Set(['WORK_ORDER', 'PATROL', 'TASK']);
+const TASK_KINDS = new Set(['INSPECTION', 'MAINTENANCE']);
+const TASK_SCHEDULES = new Set(['DAILY', 'WEEKLY', 'INTERVAL', 'FIXED', 'MANUAL']);
+const TASK_TARGETS = new Set(['PROCESS', 'EQUIPMENT']);
 
 // 只认魔数，不信前端声明的 mime —— 否则改个扩展名就能往服务器上传任意文件。
 const IMAGE_SIGNATURES = [
@@ -47,6 +54,23 @@ const IMAGE_SIGNATURES = [
 
 function detectImage(buffer) {
   return IMAGE_SIGNATURES.find((item) => item.test(buffer)) || null;
+}
+
+function decodeAttachmentBase64(value) {
+  if (typeof value !== 'string' || !value) {
+    throw new DomainError('照片内容为空', 400, 'VALIDATION_ERROR');
+  }
+  const normalized = value.replace(/\s+/g, '');
+  if (!normalized || normalized.length % 4 !== 0
+      || !/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
+    throw new DomainError('照片编码无效', 400, 'VALIDATION_ERROR');
+  }
+  const buffer = Buffer.from(normalized, 'base64');
+  if (!buffer.length || buffer.toString('base64').replace(/=+$/, '')
+    !== normalized.replace(/=+$/, '')) {
+    throw new DomainError('照片编码无效', 400, 'VALIDATION_ERROR');
+  }
+  return buffer;
 }
 
 // 三个维度的平均分，保留一位小数。
@@ -78,7 +102,7 @@ function summarizeReviewRow(row) {
 }
 
 function generatePassword() {
-  const bytes = crypto.randomBytes(10);
+  const bytes = crypto.randomBytes(14);
   return `ysm${[...bytes].map((byte) => PASSWORD_ALPHABET[byte % PASSWORD_ALPHABET.length]).join('')}`;
 }
 
@@ -140,10 +164,119 @@ function upper(value) {
   return String(value || '').trim().toUpperCase();
 }
 
+function booleanValue(value) {
+  if (value === true || value === 1 || value === '1') return true;
+  if (value === false || value === 0 || value === '0' || value === '' || value === null || value === undefined) {
+    return false;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', 'yes', '是'].includes(normalized)) return true;
+    if (['false', 'no', '否'].includes(normalized)) return false;
+  }
+  throw new DomainError('布尔字段格式不正确', 400, 'VALIDATION_ERROR');
+}
+
+function optionalNonNegativeNumber(value, field) {
+  if (value === '' || value === undefined || value === null) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) {
+    throw new DomainError(`${field}必须是大于或等于0的有效数字`, 400, 'VALIDATION_ERROR');
+  }
+  return number;
+}
+
+function optionalNumber(value, field) {
+  if (value === '' || value === undefined || value === null) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    throw new DomainError(`${field}必须是有效数字`, 400, 'VALIDATION_ERROR');
+  }
+  return number;
+}
+
+function urgencyValue(value) {
+  const urgency = String(value || 'NORMAL').toUpperCase();
+  if (!['NORMAL', 'URGENT', 'CRITICAL'].includes(urgency)) {
+    throw new DomainError('紧急程度无效', 400, 'VALIDATION_ERROR');
+  }
+  return urgency;
+}
+
+function enumValue(value, allowed, field) {
+  const normalized = upper(value);
+  if (!allowed.has(normalized)) {
+    throw new DomainError(`${field}无效`, 400, 'VALIDATION_ERROR');
+  }
+  return normalized;
+}
+
+function validIso(value, field, { required = false } = {}) {
+  if ((value === undefined || value === null || value === '') && !required) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new DomainError(`${field}格式不正确`, 400, 'VALIDATION_ERROR');
+  }
+  return date.toISOString();
+}
+
+function nextScheduleAt(currentIso, scheduleType, intervalDays) {
+  if (scheduleType === 'MANUAL' || scheduleType === 'FIXED') return null;
+  const date = new Date(currentIso);
+  const daysToAdd = scheduleType === 'DAILY' ? 1
+    : scheduleType === 'WEEKLY' ? 7 : intervalDays;
+  date.setUTCDate(date.getUTCDate() + daysToAdd);
+  return date.toISOString();
+}
+
 class EquipmentService {
   constructor(db, options = {}) {
     this.db = db;
     this.attachmentRoot = options.attachmentRoot || DEFAULT_ATTACHMENT_ROOT;
+  }
+
+  executeIdempotent(context, operation, requestKey, payload, callback) {
+    const key = String(requestKey || '').trim();
+    if (!key) return callback();
+    if (!/^[A-Za-z0-9._:-]{8,120}$/.test(key)) {
+      throw new DomainError('Idempotency-Key格式无效', 400, 'VALIDATION_ERROR');
+    }
+    const userId = positiveId(context.user_id, '当前用户');
+    const requestHash = crypto.createHash('sha256')
+      .update(JSON.stringify(payload ?? null))
+      .digest('hex');
+    this.db.prepare('DELETE FROM idempotency_requests WHERE expires_at<=?').run(nowIso());
+    const existing = this.db.prepare(`
+      SELECT * FROM idempotency_requests
+      WHERE user_id=? AND operation=? AND request_key=?
+    `).get(userId, operation, key);
+    if (existing) {
+      if (existing.request_hash !== requestHash) {
+        throw new DomainError('同一个Idempotency-Key不能用于不同请求',
+          409, 'IDEMPOTENCY_CONFLICT');
+      }
+      if (existing.status === 'COMPLETED' && existing.response_json) {
+        return JSON.parse(existing.response_json);
+      }
+      throw new DomainError('相同请求正在处理中，请稍后重试', 409, 'IDEMPOTENCY_IN_PROGRESS');
+    }
+    const now = new Date();
+    const created = this.db.prepare(`
+      INSERT INTO idempotency_requests(
+        user_id, operation, request_key, request_hash, status, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, 'PENDING', ?, ?)
+    `).run(userId, operation, key, requestHash, now.toISOString(),
+      new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString());
+    try {
+      const result = callback();
+      this.db.prepare(`
+        UPDATE idempotency_requests SET status='COMPLETED', response_json=? WHERE id=?
+      `).run(JSON.stringify(result), created.lastInsertRowid);
+      return result;
+    } catch (error) {
+      this.db.prepare('DELETE FROM idempotency_requests WHERE id=?').run(created.lastInsertRowid);
+      throw error;
+    }
   }
 
   dashboard() {
@@ -168,6 +301,93 @@ class EquipmentService {
       downtimeWorkOrders: scalar(`SELECT COUNT(*) AS count FROM work_orders WHERE is_downtime = 1 AND status NOT IN ('COMPLETED', 'CANCELLED')`),
       avgResponseMinutes: minutesBetween('reported_at', 'arrived_at'),
       avgRepairMinutes: minutesBetween('arrived_at', 'completed_at'),
+      overdueInspectionTasks: scalar(`
+        SELECT COUNT(*) AS count FROM scheduled_tasks
+        WHERE task_kind='INSPECTION' AND status='PENDING' AND due_at<?
+      `, nowIso()),
+      overdueMaintenanceTasks: scalar(`
+        SELECT COUNT(*) AS count FROM scheduled_tasks
+        WHERE task_kind='MAINTENANCE' AND status='PENDING' AND due_at<?
+      `, nowIso()),
+    };
+  }
+
+  operationalReport(input = {}, context = null) {
+    if (context && Number(context.level) < LEVELS.TECHNICIAN) {
+      throw new DomainError('当前级别无权查看运营报表', 403, 'FORBIDDEN');
+    }
+    const end = input.end ? new Date(input.end) : new Date();
+    const start = input.start ? new Date(input.start)
+      : new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+      throw new DomainError('报表日期范围无效', 400, 'VALIDATION_ERROR');
+    }
+    if (end.getTime() - start.getTime() > 366 * 24 * 60 * 60 * 1000) {
+      throw new DomainError('单次报表最多查询366天', 400, 'VALIDATION_ERROR');
+    }
+    const startIso = start.toISOString();
+    const endIso = end.toISOString();
+    const totals = asObject(this.db.prepare(`
+      SELECT COUNT(*) AS work_orders,
+        SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed,
+        SUM(CASE WHEN is_downtime=1 THEN 1 ELSE 0 END) AS downtime_orders,
+        ROUND(AVG(CASE WHEN arrived_at IS NOT NULL
+          THEN (julianday(arrived_at)-julianday(reported_at))*1440 END), 1) AS avg_response_minutes,
+        ROUND(AVG(CASE WHEN completed_at IS NOT NULL AND arrived_at IS NOT NULL
+          THEN (julianday(completed_at)-julianday(arrived_at))*1440 END), 1) AS avg_repair_minutes,
+        ROUND(SUM(COALESCE(downtime_minutes, 0)), 1) AS downtime_minutes,
+        SUM(CASE WHEN reopened_from_work_order_id IS NOT NULL THEN 1 ELSE 0 END) AS repeat_repairs
+      FROM work_orders WHERE reported_at>=? AND reported_at<=?
+    `).get(startIso, endIso));
+    const faults = asObjects(this.db.prepare(`
+      SELECT COALESCE(fc.code, 'UNCLASSIFIED') AS code,
+             COALESCE(fc.category, '未分类') AS category,
+             COALESCE(fc.part, '') AS part,
+             COALESCE(fc.symptom, wo.fault_symptom) AS symptom,
+             COUNT(*) AS count, SUM(COALESCE(wo.downtime_minutes, 0)) AS downtime_minutes
+      FROM work_orders wo LEFT JOIN fault_codes fc ON fc.id=wo.fault_code_id
+      WHERE wo.reported_at>=? AND wo.reported_at<=?
+      GROUP BY COALESCE(fc.code, 'UNCLASSIFIED'), COALESCE(fc.category, '未分类'),
+               COALESCE(fc.part, ''), COALESCE(fc.symptom, wo.fault_symptom)
+      ORDER BY count DESC, downtime_minutes DESC LIMIT 50
+    `).all(startIso, endIso));
+    const equipment = asObjects(this.db.prepare(`
+      SELECT e.id, e.code, e.standard_name, COUNT(*) AS fault_count,
+             SUM(COALESCE(wo.downtime_minutes, 0)) AS downtime_minutes
+      FROM work_orders wo JOIN equipment e ON e.id=wo.final_equipment_id
+      WHERE wo.reported_at>=? AND wo.reported_at<=?
+      GROUP BY e.id ORDER BY fault_count DESC, downtime_minutes DESC LIMIT 50
+    `).all(startIso, endIso));
+    const technicians = asObjects(this.db.prepare(`
+      SELECT COALESCE(u.display_name, wo.assignee, '未指派') AS technician,
+             COUNT(*) AS assigned_count,
+             SUM(CASE WHEN wo.status='COMPLETED' THEN 1 ELSE 0 END) AS completed_count,
+             ROUND(AVG(CASE WHEN wo.completed_at IS NOT NULL AND wo.arrived_at IS NOT NULL
+               THEN (julianday(wo.completed_at)-julianday(wo.arrived_at))*1440 END), 1)
+               AS avg_repair_minutes
+      FROM work_orders wo LEFT JOIN users u ON u.id=wo.assignee_user_id
+      WHERE wo.reported_at>=? AND wo.reported_at<=?
+      GROUP BY COALESCE(wo.assignee_user_id, wo.assignee, '未指派')
+      ORDER BY completed_count DESC
+    `).all(startIso, endIso));
+    const tasks = asObjects(this.db.prepare(`
+      SELECT task_kind, COUNT(*) AS due_count,
+             SUM(CASE WHEN status IN ('COMPLETED','ABNORMAL','CONVERTED') THEN 1 ELSE 0 END)
+               AS executed_count,
+             SUM(CASE WHEN status IN ('ABNORMAL','CONVERTED') THEN 1 ELSE 0 END)
+               AS abnormal_count,
+             SUM(CASE WHEN status='PENDING' AND due_at<? THEN 1 ELSE 0 END)
+               AS overdue_count
+      FROM scheduled_tasks WHERE due_at>=? AND due_at<=?
+      GROUP BY task_kind
+    `).all(nowIso(), startIso, endIso));
+    return {
+      range: { start: startIso, end: endIso },
+      totals,
+      faults,
+      equipment,
+      technicians,
+      tasks,
     };
   }
 
@@ -441,26 +661,26 @@ class EquipmentService {
           const result = this.db.prepare(`INSERT INTO workshops(factory_id, code, name, created_at) VALUES (?, ?, ?, ?)`)
             .run(factory.id, row.workshop_code, row.workshop_name, nowIso());
           workshopIds.set(row.workshop_code, Number(result.lastInsertRowid));
-          this.audit('workshop', result.lastInsertRowid, 'IMPORT_CREATE', context.actor, null, row);
+          this.audit('workshop', result.lastInsertRowid, 'IMPORT_CREATE', context, null, row);
         }
         if (!lineIds.has(row.line_code)) {
           const result = this.db.prepare(`INSERT INTO production_lines(workshop_id, code, name, supervisor, created_at) VALUES (?, ?, ?, ?, ?)`)
             .run(workshopIds.get(row.workshop_code), row.line_code, row.line_name, optionalText(row.supervisor, 80), nowIso());
           lineIds.set(row.line_code, Number(result.lastInsertRowid));
-          this.audit('production_line', result.lastInsertRowid, 'IMPORT_CREATE', context.actor, null, row);
+          this.audit('production_line', result.lastInsertRowid, 'IMPORT_CREATE', context, null, row);
         }
         if (!processIds.has(row.process_code)) {
           const result = this.db.prepare(`INSERT INTO processes(line_id, code, name, sequence_no, created_at) VALUES (?, ?, ?, ?, ?)`)
             .run(lineIds.get(row.line_code), row.process_code, row.process_name, row.process_sequence, nowIso());
           processIds.set(row.process_code, Number(result.lastInsertRowid));
           this.createQrMapping('PROCESS', result.lastInsertRowid);
-          this.audit('process', result.lastInsertRowid, 'IMPORT_CREATE', context.actor, null, row);
+          this.audit('process', result.lastInsertRowid, 'IMPORT_CREATE', context, null, row);
         }
         if (!positionIds.has(row.position_code)) {
           const result = this.db.prepare(`INSERT INTO positions(process_id, code, name, sequence_no, critical, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
             .run(processIds.get(row.process_code), row.position_code, row.position_name, row.position_sequence, row.position_critical ? 1 : 0, nowIso());
           positionIds.set(row.position_code, Number(result.lastInsertRowid));
-          this.audit('position', result.lastInsertRowid, 'IMPORT_CREATE', context.actor, null, row);
+          this.audit('position', result.lastInsertRowid, 'IMPORT_CREATE', context, null, row);
         }
 
         if (!item.equipment_key) continue;
@@ -501,14 +721,14 @@ class EquipmentService {
           `).run(changeNo, equipmentId, positionId, installedAt, context.actor, context.actor, nowIso(), filename, nowIso());
           this.db.prepare(`INSERT INTO equipment_installations(equipment_id, position_id, installed_at, change_request_id, created_at) VALUES (?, ?, ?, ?, ?)`)
             .run(equipmentId, positionId, installedAt, changeResult.lastInsertRowid, nowIso());
-          this.audit('composition_change', changeResult.lastInsertRowid, 'IMPORT_APPROVE', context.actor, null, { change_no: changeNo, equipment_id: equipmentId, position_id: positionId });
+          this.audit('composition_change', changeResult.lastInsertRowid, 'IMPORT_APPROVE', context, null, { change_no: changeNo, equipment_id: equipmentId, position_id: positionId });
         }
       }
       const batch = this.db.prepare(`
         INSERT INTO import_batches(import_type, filename, file_hash, row_count, result_json, actor, created_at)
         VALUES ('LINE_COMPOSITION', ?, ?, ?, ?, ?, ?)
       `).run(filename, fileHash, rows.length, JSON.stringify(actual), context.actor, nowIso());
-      this.audit('import_batch', batch.lastInsertRowid, 'COMMIT', context.actor, null, actual);
+      this.audit('import_batch', batch.lastInsertRowid, 'COMMIT', context, null, actual);
       return { batch_id: Number(batch.lastInsertRowid), ...actual };
     });
   }
@@ -525,14 +745,14 @@ class EquipmentService {
     const factoryId = positiveId(input.factory_id, '工厂');
     const code = requireText(input.code, '车间编码', 40).toUpperCase();
     const name = requireText(input.name, '车间名称', 80);
-    this.ensure('factories', factoryId, '工厂不存在');
+    this.assertActiveStructure('factory', factoryId);
     try {
       const result = this.db.prepare(`
         INSERT INTO workshops(factory_id, code, name, created_at)
         VALUES (?, ?, ?, ?)
       `).run(factoryId, code, name, nowIso());
       const created = this.rowById('workshops', result.lastInsertRowid);
-      this.audit('workshop', created.id, 'CREATE', context.actor, null, created);
+      this.audit('workshop', created.id, 'CREATE', context, null, created);
       return created;
     } catch (error) {
       this.rethrowConstraint(error, '车间编码已存在');
@@ -546,7 +766,7 @@ class EquipmentService {
     this.db.prepare(`UPDATE workshops SET name=? WHERE id=?`)
       .run(requireText(input.name, '车间名称', 80), current.id);
     const updated = this.rowById('workshops', current.id);
-    this.audit('workshop', current.id, 'UPDATE', context.actor, current, updated);
+    this.audit('workshop', current.id, 'UPDATE', context, current, updated);
     return updated;
   }
 
@@ -556,14 +776,14 @@ class EquipmentService {
     const code = requireText(input.code, '产线编码', 40).toUpperCase();
     const name = requireText(input.name, '产线名称', 80);
     const now = nowIso();
-    this.ensure('workshops', workshopId, '车间不存在');
+    this.assertActiveStructure('workshop', workshopId);
     try {
       const result = this.db.prepare(`
         INSERT INTO production_lines(workshop_id, code, name, supervisor, created_at)
         VALUES (?, ?, ?, ?, ?)
       `).run(workshopId, code, name, optionalText(input.supervisor, 80), now);
       const created = this.rowById('production_lines', result.lastInsertRowid);
-      this.audit('production_line', created.id, 'CREATE', context.actor, null, created);
+      this.audit('production_line', created.id, 'CREATE', context, null, created);
       return created;
     } catch (error) {
       this.rethrowConstraint(error, '产线编码已存在');
@@ -577,14 +797,14 @@ class EquipmentService {
     this.db.prepare(`UPDATE production_lines SET name=?, supervisor=? WHERE id=?`)
       .run(requireText(input.name, '产线名称', 80), optionalText(input.supervisor, 80), current.id);
     const updated = this.rowById('production_lines', current.id);
-    this.audit('production_line', current.id, 'UPDATE', context.actor, current, updated);
+    this.audit('production_line', current.id, 'UPDATE', context, current, updated);
     return updated;
   }
 
   createProcess(input, context) {
     assertRole(context.role, [ROLES.EQUIPMENT_ADMIN, ROLES.ADMIN]);
     const lineId = positiveId(input.line_id, '产线');
-    this.ensure('production_lines', lineId, '产线不存在');
+    this.assertActiveStructure('line', lineId);
     const code = requireText(input.code, '工序编码', 50).toUpperCase();
     const name = requireText(input.name, '工序名称', 80);
     try {
@@ -594,7 +814,7 @@ class EquipmentService {
       `).run(lineId, code, name, Number(input.sequence_no) || 1, nowIso());
       const created = this.rowById('processes', result.lastInsertRowid);
       this.createQrMapping('PROCESS', created.id);
-      this.audit('process', created.id, 'CREATE', context.actor, null, created);
+      this.audit('process', created.id, 'CREATE', context, null, created);
       return created;
     } catch (error) {
       this.rethrowConstraint(error, '工序编码已存在');
@@ -608,14 +828,14 @@ class EquipmentService {
     this.db.prepare(`UPDATE processes SET name=?, sequence_no=? WHERE id=?`)
       .run(requireText(input.name, '工序名称', 80), integerOr(input.sequence_no), current.id);
     const updated = this.rowById('processes', current.id);
-    this.audit('process', current.id, 'UPDATE', context.actor, current, updated);
+    this.audit('process', current.id, 'UPDATE', context, current, updated);
     return updated;
   }
 
   createPosition(input, context) {
     assertRole(context.role, [ROLES.EQUIPMENT_ADMIN, ROLES.ADMIN]);
     const processId = positiveId(input.process_id, '工序');
-    this.ensure('processes', processId, '工序不存在');
+    this.assertActiveStructure('process', processId);
     const code = requireText(input.code, '机位编码', 60).toUpperCase();
     const name = requireText(input.name, '机位名称', 80);
     try {
@@ -624,7 +844,7 @@ class EquipmentService {
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(processId, code, name, Number(input.sequence_no) || 1, input.critical ? 1 : 0, nowIso());
       const created = this.rowById('positions', result.lastInsertRowid);
-      this.audit('position', created.id, 'CREATE', context.actor, null, created);
+      this.audit('position', created.id, 'CREATE', context, null, created);
       return created;
     } catch (error) {
       this.rethrowConstraint(error, '机位编码已存在');
@@ -638,7 +858,30 @@ class EquipmentService {
     this.db.prepare(`UPDATE positions SET name=?, sequence_no=?, critical=? WHERE id=?`)
       .run(requireText(input.name, '机位名称', 80), integerOr(input.sequence_no), input.critical ? 1 : 0, current.id);
     const updated = this.rowById('positions', current.id);
-    this.audit('position', current.id, 'UPDATE', context.actor, current, updated);
+    this.audit('position', current.id, 'UPDATE', context, current, updated);
+    return updated;
+  }
+
+  updateStructureStatus(type, id, input, context) {
+    assertRole(context.role, [ROLES.EQUIPMENT_ADMIN, ROLES.ADMIN]);
+    const config = {
+      workshop: { table: 'workshops', entity: 'workshop' },
+      line: { table: 'production_lines', entity: 'production_line' },
+      process: { table: 'processes', entity: 'process' },
+      position: { table: 'positions', entity: 'position' },
+    }[String(type || '').toLowerCase()];
+    if (!config) throw new DomainError('结构类型无效', 400, 'VALIDATION_ERROR');
+    const current = this.rowById(config.table, positiveId(id, '结构'));
+    if (!current) throw new DomainError('结构不存在', 404, 'NOT_FOUND');
+    const status = enumValue(input.status, new Set(['ACTIVE', 'DISABLED']), '结构状态');
+    if (status === 'DISABLED' && config.table === 'positions'
+      && this.activeEquipmentAtPosition(current.id)) {
+      throw new DomainError('该机位仍安装着设备，请先完成设备变动后再停用',
+        409, 'STRUCTURE_IN_USE');
+    }
+    this.db.prepare(`UPDATE ${config.table} SET status=? WHERE id=?`).run(status, current.id);
+    const updated = this.rowById(config.table, current.id);
+    this.audit(config.entity, current.id, 'STATUS_CHANGE', context, current, updated);
     return updated;
   }
 
@@ -682,6 +925,12 @@ class EquipmentService {
         ORDER BY id
       `).all(...processIds))
       : [];
+    const patrolCount = processIds.length
+      ? Number(this.db.prepare(`
+        SELECT COUNT(*) AS count FROM patrol_records
+        WHERE process_id IN (${processIds.map(() => '?').join(',')})
+      `).get(...processIds).count)
+      : 0;
     let compositionCount = 0;
     if (positionIds.length) {
       const placeholders = positionIds.map(() => '?').join(',');
@@ -693,6 +942,8 @@ class EquipmentService {
     const blockers = [];
     if (installationCount) blockers.push(`包含${installationCount}条设备安装历史`);
     if (compositionCount) blockers.push(`包含${compositionCount}条设备变动记录`);
+    if (workOrders.length) blockers.push(`包含${workOrders.length}张维修工单`);
+    if (patrolCount) blockers.push(`包含${patrolCount}条巡检记录`);
     return {
       deletable: blockers.length === 0,
       target: { type: normalizedType, id: target.id, code: target.code, name: target.name, label: config.label },
@@ -702,6 +953,7 @@ class EquipmentService {
         processes: processIds.length,
         positions: positionIds.length,
         work_orders_to_delete: workOrders.length,
+        patrol_records: patrolCount,
       },
       blockers,
       snapshot: {
@@ -720,15 +972,12 @@ class EquipmentService {
     const preview = this.structureDeletionPreview(type, id);
     if (!preview.deletable) throw new DomainError(`不能删除：${preview.blockers.join('；')}`, 409, 'STRUCTURE_IN_USE');
     return transaction(this.db, () => {
-      this.deleteWhereIn('work_order_parts', 'work_order_id', preview.ids.workOrderIds);
-      this.deleteWhereIn('work_order_history', 'work_order_id', preview.ids.workOrderIds);
-      this.deleteWhereIn('work_orders', 'id', preview.ids.workOrderIds);
       this.deleteWhereIn('qr_mappings', 'target_id', preview.ids.processIds, `target_type='PROCESS'`);
       this.deleteWhereIn('positions', 'id', preview.ids.positionIds);
       this.deleteWhereIn('processes', 'id', preview.ids.processIds);
       this.deleteWhereIn('production_lines', 'id', preview.ids.lineIds);
       this.deleteWhereIn('workshops', 'id', preview.ids.workshopIds);
-      this.audit('structure_branch', preview.target.id, 'DELETE', context.actor, preview, null);
+      this.audit('structure_branch', preview.target.id, 'DELETE', context, preview, null);
       return { target: preview.target, deleted: preview.counts };
     });
   }
@@ -773,7 +1022,7 @@ class EquipmentService {
         INSERT INTO equipment_types(code, name, created_at, updated_at) VALUES (?, ?, ?, ?)
       `).run(code, name, time, time);
       const created = this.rowById('equipment_types', result.lastInsertRowid);
-      this.audit('equipment_type', created.id, 'CREATE', context.actor, null, created);
+      this.audit('equipment_type', created.id, 'CREATE', context, null, created);
       return created;
     } catch (error) {
       this.rethrowConstraint(error, '设备类型代码已存在');
@@ -787,7 +1036,7 @@ class EquipmentService {
     this.db.prepare(`UPDATE equipment_types SET name=?, updated_at=? WHERE id=?`)
       .run(requireText(input.name, '类型名称', 80), nowIso(), current.id);
     const updated = this.rowById('equipment_types', current.id);
-    this.audit('equipment_type', current.id, 'UPDATE', context.actor, current, updated);
+    this.audit('equipment_type', current.id, 'UPDATE', context, current, updated);
     return updated;
   }
 
@@ -800,7 +1049,7 @@ class EquipmentService {
     return transaction(this.db, () => {
       this.db.prepare('DELETE FROM equipment_code_sequences WHERE equipment_type_id=?').run(current.id);
       this.db.prepare('DELETE FROM equipment_types WHERE id=?').run(current.id);
-      this.audit('equipment_type', current.id, 'DELETE', context.actor, current, null);
+      this.audit('equipment_type', current.id, 'DELETE', context, current, null);
       return current;
     });
   }
@@ -835,7 +1084,7 @@ class EquipmentService {
     );
     const created = this.rowById('equipment', result.lastInsertRowid);
     this.createQrMapping('EQUIPMENT', created.id);
-    this.audit('equipment', created.id, 'CREATE', context.actor, null, created);
+    this.audit('equipment', created.id, 'CREATE', context, null, created);
     return this.getEquipment(created.id);
   }
 
@@ -962,7 +1211,7 @@ class EquipmentService {
           INSERT INTO import_batches(import_type, filename, file_hash, row_count, result_json, actor, status, created_at)
           VALUES ('EQUIPMENT', ?, ?, ?, ?, ?, 'COMPLETED', ?)
         `).run(filename, fileHash, created.length, JSON.stringify(result), context.actor, nowIso());
-        this.audit('import_batch', batch.lastInsertRowid, 'COMMIT', context.actor, null, result);
+        this.audit('import_batch', batch.lastInsertRowid, 'COMMIT', context, null, result);
         return { batch_id: Number(batch.lastInsertRowid), ...result };
       });
     } catch (error) {
@@ -976,9 +1225,19 @@ class EquipmentService {
     }
   }
 
-  listEquipment(search = '') {
+  workerEquipmentView(item) {
+    const allowed = [
+      'id', 'code', 'standard_name', 'alias', 'category', 'status', 'critical',
+      'type_code', 'type_name', 'key_spec', 'position_id', 'position_code',
+      'position_name', 'position_sequence', 'process_id', 'process_name',
+      'line_id', 'line_name', 'workshop_id', 'workshop_name', 'qr_token',
+    ];
+    return Object.fromEntries(allowed.filter((key) => key in item).map((key) => [key, item[key]]));
+  }
+
+  listEquipment(search = '', context = null) {
     const query = `%${String(search).trim()}%`;
-    return asObjects(this.db.prepare(`
+    const rows = asObjects(this.db.prepare(`
       SELECT e.*, et.code AS type_code, et.name AS type_name,
              pos.id AS position_id, pos.code AS position_code, pos.name AS position_name,
              pos.sequence_no AS position_sequence,
@@ -999,6 +1258,8 @@ class EquipmentService {
       -- 分级选择器直接吃这个顺序，不用在前端再排一遍。未安装的（l.code 为 NULL）排最后。
       ORDER BY l.code IS NULL, l.code, pos.sequence_no, e.code
     `).all(query, query, query, query, query));
+    return context && Number(context.level) === LEVELS.WORKER
+      ? rows.map((item) => this.workerEquipmentView(item)) : rows;
   }
 
   updateEquipment(id, input, context) {
@@ -1025,11 +1286,11 @@ class EquipmentService {
     // 没有未结工单时立刻落到手工选的状态；正在维修则保持维修态，结单后自然回到这里。
     this.syncEquipmentStatus(current.id, context);
     const updated = this.getEquipment(current.id);
-    this.audit('equipment', current.id, 'UPDATE', context.actor, current, updated);
+    this.audit('equipment', current.id, 'UPDATE', context, current, updated);
     return updated;
   }
 
-  getEquipment(id) {
+  getEquipment(id, context = null) {
     const equipmentId = positiveId(id, '设备');
     const row = this.db.prepare(`
       SELECT e.*, et.code AS type_code, et.name AS type_name,
@@ -1046,7 +1307,9 @@ class EquipmentService {
       WHERE e.id = ?
     `).get(equipmentId);
     if (!row) throw new DomainError('设备不存在', 404, 'NOT_FOUND');
-    return asObject(row);
+    const result = asObject(row);
+    return context && Number(context.level) === LEVELS.WORKER
+      ? this.workerEquipmentView(result) : result;
   }
 
   // 把散在四张表里的设备历史聚合成一份履历：位置变动、维修工单、档案修改、统计摘要。
@@ -1154,12 +1417,13 @@ class EquipmentService {
     };
   }
 
-  resolveQr(token) {
+  resolveQr(token, context = null) {
     const mapping = this.db.prepare(`SELECT * FROM qr_mappings WHERE token = ? AND status = 'ACTIVE'`).get(token);
     if (!mapping) throw new DomainError('二维码不存在或已停用', 404, 'QR_NOT_FOUND');
     if (mapping.target_type === 'EQUIPMENT') {
-      return { target_type: 'EQUIPMENT', target: this.getEquipment(mapping.target_id) };
+      return { target_type: 'EQUIPMENT', target: this.getEquipment(mapping.target_id, context) };
     }
+    this.assertActiveStructure('process', mapping.target_id);
     const process = this.db.prepare(`
       SELECT p.*, l.name AS line_name FROM processes p
       JOIN production_lines l ON l.id = p.line_id WHERE p.id = ?
@@ -1175,6 +1439,45 @@ class EquipmentService {
         WHERE pos.process_id = ? ORDER BY pos.sequence_no
       `).all(mapping.target_id).map(asObject),
     };
+  }
+
+  recordQrScan(token, context, metadata = {}) {
+    const mapping = this.db.prepare(`
+      SELECT * FROM qr_mappings WHERE token=? AND status='ACTIVE'
+    `).get(token);
+    if (!mapping) throw new DomainError('二维码不存在或已停用', 404, 'QR_NOT_FOUND');
+    this.db.prepare(`
+      INSERT INTO qr_scan_logs(
+        mapping_id, user_id, username, source_ip, user_agent, scanned_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(mapping.id, context?.user_id || null, context?.username || null,
+      optionalText(metadata.source_ip, 100), optionalText(metadata.user_agent, 500), nowIso());
+    return this.resolveQr(token, context);
+  }
+
+  processQrLabels(lineId = null, context = null) {
+    if (context && Number(context.level) < LEVELS.TECHNICIAN) {
+      throw new DomainError('当前级别无权查看工序二维码', 403, 'FORBIDDEN');
+    }
+    const params = [];
+    let where = `WHERE p.status='ACTIVE' AND l.status='ACTIVE'
+      AND w.status='ACTIVE' AND f.status='ACTIVE'`;
+    if (lineId) {
+      where += ' AND p.line_id=?';
+      params.push(positiveId(lineId, '产线'));
+    }
+    return asObjects(this.db.prepare(`
+      SELECT p.id, p.code, p.name, p.sequence_no, l.id AS line_id,
+             l.code AS line_code, l.name AS line_name, q.token AS qr_token
+      FROM processes p
+      JOIN production_lines l ON l.id=p.line_id
+      JOIN workshops w ON w.id=l.workshop_id
+      JOIN factories f ON f.id=w.factory_id
+      JOIN qr_mappings q ON q.target_type='PROCESS' AND q.target_id=p.id
+        AND q.status='ACTIVE'
+      ${where}
+      ORDER BY l.code, p.sequence_no, p.code
+    `).all(...params));
   }
 
   lineComposition(lineId, at) {
@@ -1223,7 +1526,7 @@ class EquipmentService {
       if (this.activeInstallation(replacementId)) throw new DomainError('替换设备当前已安装', 409);
       toPositionId = current.position_id;
     }
-    if (toPositionId) this.ensure('positions', toPositionId, '目标机位不存在');
+    if (toPositionId) this.assertActiveStructure('position', toPositionId);
 
     const effectiveAt = effectiveDate(input.effective_at);
     const reason = requireText(input.reason, '变动原因', 500);
@@ -1232,12 +1535,12 @@ class EquipmentService {
     const result = this.db.prepare(`
       INSERT INTO composition_changes(
         change_no, action, equipment_id, replacement_equipment_id, from_position_id,
-        to_position_id, effective_at, reason, submitted_by, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        to_position_id, effective_at, reason, submitted_by, submitted_by_user_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(changeNo, action, equipmentId, replacementId, fromPositionId, toPositionId,
-      effectiveAt, reason, context.actor, nowIso());
+      effectiveAt, reason, context.actor, context.user_id || null, nowIso());
     const created = this.getCompositionChange(result.lastInsertRowid);
-    this.audit('composition_change', created.id, 'SUBMIT', context.actor, null, created);
+    this.audit('composition_change', created.id, 'SUBMIT', context, null, created);
     return created;
   }
 
@@ -1259,30 +1562,39 @@ class EquipmentService {
     assertRole(context.role, [ROLES.EQUIPMENT_ADMIN, ROLES.ADMIN]);
     const change = this.getCompositionChange(id);
     if (change.status !== 'PENDING') throw new DomainError('该变动申请已经处理', 409);
+    if (change.submitted_by_user_id && change.submitted_by_user_id === context.user_id) {
+      throw new DomainError('设备变动必须由另一名管理员审核，提交人不能审核自己的申请',
+        409, 'SELF_APPROVAL_FORBIDDEN');
+    }
     const decision = requireText(input.decision, '审核结果', 20).toUpperCase();
     if (!['APPROVED', 'REJECTED'].includes(decision)) throw new DomainError('审核结果无效', 400);
     if (decision === 'REJECTED') {
       const note = requireText(input.note, '驳回原因', 500);
       this.db.prepare(`
-        UPDATE composition_changes SET status='REJECTED', reviewed_by=?, reviewed_at=?, review_note=? WHERE id=?
-      `).run(context.actor, nowIso(), note, change.id);
+        UPDATE composition_changes SET status='REJECTED', reviewed_by=?, reviewed_by_user_id=?,
+          reviewed_at=?, review_note=? WHERE id=?
+      `).run(context.actor, context.user_id || null, nowIso(), note, change.id);
       const updated = this.getCompositionChange(change.id);
-      this.audit('composition_change', change.id, 'REJECT', context.actor, change, updated);
+      this.audit('composition_change', change.id, 'REJECT', context, change, updated);
       return updated;
     }
 
     return transaction(this.db, () => {
       this.applyCompositionChange(change);
       this.db.prepare(`
-        UPDATE composition_changes SET status='APPROVED', reviewed_by=?, reviewed_at=?, review_note=? WHERE id=?
-      `).run(context.actor, nowIso(), optionalText(input.note, 500), change.id);
+        UPDATE composition_changes SET status='APPROVED', reviewed_by=?, reviewed_by_user_id=?,
+          reviewed_at=?, review_note=? WHERE id=?
+      `).run(context.actor, context.user_id || null, nowIso(), optionalText(input.note, 500), change.id);
       const updated = this.getCompositionChange(change.id);
-      this.audit('composition_change', change.id, 'APPROVE', context.actor, change, updated);
+      this.audit('composition_change', change.id, 'APPROVE', context, change, updated);
       return updated;
     });
   }
 
   applyCompositionChange(change) {
+    if (change.action !== 'REMOVE' && change.to_position_id) {
+      this.assertActiveStructure('position', change.to_position_id);
+    }
     const current = this.activeInstallation(change.equipment_id);
     const target = change.to_position_id ? this.activeEquipmentAtPosition(change.to_position_id) : null;
     if (change.action === 'INSTALL') {
@@ -1320,7 +1632,7 @@ class EquipmentService {
     const equipmentId = input.equipment_id ? positiveId(input.equipment_id, '设备') : null;
     if (equipmentId) this.ensure('equipment', equipmentId, '设备不存在');
     let processId = input.process_id ? positiveId(input.process_id, '工序') : null;
-    if (processId) this.ensure('processes', processId, '工序不存在');
+    if (processId) this.assertActiveStructure('process', processId);
     // 扫码报修的常规路径：只有设备，工序按当前安装关系带出。设备还没装到机位上时推不出来，
     // 那就只能回头让人选——work_orders.process_id 是 NOT NULL，没有工序这单落不了地。
     if (!processId) processId = this.processIdForEquipment(equipmentId);
@@ -1329,6 +1641,7 @@ class EquipmentService {
         ? '这台设备还没安装到任何机位上，请手动选择所属工序'
         : '请选择所属工序，或者直接扫设备上的二维码', 400, 'PROCESS_REQUIRED');
     }
+    this.assertActiveStructure('process', processId);
 
     const fault = this.resolveReportedFault(input);
     const photos = Array.isArray(input.attachments) ? input.attachments : [];
@@ -1359,7 +1672,7 @@ class EquipmentService {
         });
         this.syncEquipmentStatus(equipmentId, context);
         const created = this.getWorkOrder(id);
-        this.audit('work_order', id, 'CREATE', context.actor, null, created.work_order);
+        this.audit('work_order', id, 'CREATE', context, null, created.work_order);
         return created;
       });
     } catch (error) {
@@ -1380,18 +1693,18 @@ class EquipmentService {
         code: null,
         symptom: description.slice(0, 500),
         description,
-        urgency: String(input.urgency || 'NORMAL').toUpperCase(),
-        isDowntime: input.is_downtime ? 1 : 0,
+        urgency: urgencyValue(input.urgency || 'NORMAL'),
+        isDowntime: booleanValue(input.is_downtime) ? 1 : 0,
       };
     }
     const code = this.getFaultCode(input.fault_code_id);
     if (code.status !== 'ACTIVE') throw new DomainError('该故障代码已停用，请重新选择', 400, 'FAULT_CODE_DISABLED');
     // 故障码带默认值，但报修人显式选择的优先。
-    const urgency = String(input.urgency || code.default_urgency || 'NORMAL').toUpperCase();
+    const urgency = urgencyValue(input.urgency || code.default_urgency || 'NORMAL');
     return {
       code, description, urgency,
       symptom: this.faultSymptomText(code, description),
-      isDowntime: (input.is_downtime || code.requires_downtime) ? 1 : 0,
+      isDowntime: (booleanValue(input.is_downtime) || code.requires_downtime) ? 1 : 0,
     };
   }
 
@@ -1529,7 +1842,7 @@ class EquipmentService {
     this.history(current.id, current.status === 'SUBMITTED' ? (selfClaim ? 'CLAIMED' : 'ASSIGNED') : 'REASSIGNED',
       current.status, nextStatus, context.actor, optionalText(input.note, 500), { assignee });
     const updated = this.getWorkOrder(current.id);
-    this.audit('work_order', current.id, 'ASSIGN', context.actor, current, updated.work_order);
+    this.audit('work_order', current.id, 'ASSIGN', context, current, updated.work_order);
     return updated;
   }
 
@@ -1595,6 +1908,12 @@ class EquipmentService {
         '完成工单前必须用「确认故障分类」选出这次的故障代码，否则这次故障进不了任何统计',
         409, 'FAULT_CODE_REQUIRED');
     }
+    if (to === 'COMPLETED' && !current.diagnosis) {
+      throw new DomainError('完成工单前必须填写故障诊断', 409, 'DIAGNOSIS_REQUIRED');
+    }
+    if (to === 'COMPLETED' && !current.repair_action) {
+      throw new DomainError('完成工单前必须填写维修方法', 409, 'REPAIR_ACTION_REQUIRED');
+    }
     const time = nowIso();
     let extraSql = '';
     const params = [to, time];
@@ -1609,13 +1928,19 @@ class EquipmentService {
     if (to === 'COMPLETED') {
       extraSql += ', completed_at=?';
       params.push(time);
+      if (current.is_downtime && !current.downtime_is_override) {
+        const calculated = Math.max(0,
+          Math.round((new Date(time).getTime() - new Date(current.reported_at).getTime()) / 60000));
+        extraSql += ', downtime_minutes=?';
+        params.push(calculated);
+      }
     }
     params.push(current.id);
     this.db.prepare(`UPDATE work_orders SET status=?, updated_at=? ${extraSql} WHERE id=?`).run(...params);
     this.history(current.id, 'STATUS_CHANGED', current.status, to, context.actor, note, null);
     this.syncEquipmentStatus(current.final_equipment_id, context);
     const updated = this.getWorkOrder(current.id);
-    this.audit('work_order', current.id, 'STATUS_CHANGE', context.actor, current, updated.work_order);
+    this.audit('work_order', current.id, 'STATUS_CHANGE', context, current, updated.work_order);
     return updated;
   }
 
@@ -1623,17 +1948,22 @@ class EquipmentService {
     assertRole(context.role, [ROLES.TECHNICIAN, ROLES.ADMIN]);
     const current = this.getWorkOrder(id).work_order;
     this.assertArrived(current, context, '填写维修记录');
+    const downtimeMinutes = optionalNonNegativeNumber(input.downtime_minutes, '停机分钟');
+    const downtimeOverrideReason = optionalText(input.downtime_override_reason || input.note, 500);
+    if (downtimeMinutes !== null && !downtimeOverrideReason) {
+      throw new DomainError('人工填写停机分钟时必须说明修正原因', 400, 'DOWNTIME_OVERRIDE_REASON_REQUIRED');
+    }
     this.db.prepare(`
       UPDATE work_orders SET diagnosis=?, root_cause=?, repair_action=?, trial_result=?,
-        downtime_minutes=?, updated_at=? WHERE id=?
+        downtime_minutes=?, downtime_is_override=?, downtime_override_reason=?, updated_at=? WHERE id=?
     `).run(optionalText(input.diagnosis, 2000), optionalText(input.root_cause, 2000),
       optionalText(input.repair_action, 3000), optionalText(input.trial_result, 2000),
-      input.downtime_minutes === '' || input.downtime_minutes === undefined ? null : Number(input.downtime_minutes),
+      downtimeMinutes, downtimeMinutes === null ? 0 : 1, downtimeOverrideReason,
       nowIso(), current.id);
     this.history(current.id, 'REPAIR_DETAIL_UPDATED', current.status, current.status,
       context.actor, optionalText(input.note, 500), input);
     const updated = this.getWorkOrder(current.id);
-    this.audit('work_order', current.id, 'UPDATE_REPAIR_DETAIL', context.actor, current, updated.work_order);
+    this.audit('work_order', current.id, 'UPDATE_REPAIR_DETAIL', context, current, updated.work_order);
     return updated;
   }
 
@@ -1652,7 +1982,7 @@ class EquipmentService {
     this.syncEquipmentStatus(current.final_equipment_id, context);
     this.syncEquipmentStatus(equipmentId, context);
     const updated = this.getWorkOrder(current.id);
-    this.audit('work_order', current.id, 'CORRECT_EQUIPMENT', context.actor, current, updated.work_order);
+    this.audit('work_order', current.id, 'CORRECT_EQUIPMENT', context, current, updated.work_order);
     return updated;
   }
 
@@ -1672,7 +2002,7 @@ class EquipmentService {
       optionalText(input.note, 500) || `确认为 ${symptom}`,
       { from_fault_code_id: current.fault_code_id, to_fault_code_id: code.id, fault_code: code.code });
     const updated = this.getWorkOrder(current.id);
-    this.audit('work_order', current.id, 'CLASSIFY_FAULT', context.actor, current, updated.work_order);
+    this.audit('work_order', current.id, 'CLASSIFY_FAULT', context, current, updated.work_order);
     return updated;
   }
 
@@ -1712,19 +2042,24 @@ class EquipmentService {
     this.assertArrived(current, context, '记录使用零件');
     const quantity = Number(input.quantity);
     if (!Number.isFinite(quantity) || quantity <= 0) throw new DomainError('零件数量必须大于0', 400);
+    const partCondition = String(input.part_condition || 'NEW').toUpperCase();
+    if (!['NEW', 'REUSED', 'REPAIRED'].includes(partCondition)) {
+      throw new DomainError('零件状态无效', 400, 'VALIDATION_ERROR');
+    }
+    const unitCost = optionalNonNegativeNumber(input.unit_cost, '零件单价');
     const result = this.db.prepare(`
       INSERT INTO work_order_parts(
         work_order_id, part_name, specification, quantity, unit, part_condition, source,
         old_part_disposition, part_code, unit_cost, recorded_by, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(current.id, requireText(input.part_name, '零件名称', 120), optionalText(input.specification, 200),
-      quantity, requireText(input.unit || '个', '单位', 20), input.part_condition || 'NEW',
+      quantity, requireText(input.unit || '个', '单位', 20), partCondition,
       optionalText(input.source, 100), optionalText(input.old_part_disposition, 200),
-      optionalText(input.part_code, 80), input.unit_cost === '' || input.unit_cost === undefined ? null : Number(input.unit_cost),
+      optionalText(input.part_code, 80), unitCost,
       context.actor, nowIso());
     const part = asObject(this.db.prepare('SELECT * FROM work_order_parts WHERE id=?').get(result.lastInsertRowid));
     this.history(current.id, 'PART_ADDED', current.status, current.status, context.actor, null, part);
-    this.audit('work_order_part', part.id, 'CREATE', context.actor, null, part);
+    this.audit('work_order_part', part.id, 'CREATE', context, null, part);
     return part;
   }
 
@@ -1751,7 +2086,7 @@ class EquipmentService {
     this.history(current.id, 'WITHDRAWN', current.status, 'CANCELLED', context.actor, reason, null);
     this.syncEquipmentStatus(current.final_equipment_id, context);
     const updated = this.getWorkOrder(current.id);
-    this.audit('work_order', current.id, 'WITHDRAW', context.actor, current, updated.work_order);
+    this.audit('work_order', current.id, 'WITHDRAW', context, current, updated.work_order);
     return updated;
   }
 
@@ -1789,7 +2124,7 @@ class EquipmentService {
     // 否则接口层把 review 剥成 null 也没用，内容会从时间线里漏出去。
     this.history(current.id, existing ? 'REVIEW_UPDATED' : 'REVIEWED', current.status, current.status,
       context.actor, '报修人已提交评价', null);
-    this.audit('work_order_review', review.id, existing ? 'UPDATE' : 'CREATE', context.actor, existing, review);
+    this.audit('work_order_review', review.id, existing ? 'UPDATE' : 'CREATE', context, existing, review);
     return review;
   }
 
@@ -1865,7 +2200,7 @@ class EquipmentService {
     this.history(original.id, 'REOPENED', original.status, original.status, context.actor,
       `已重新报修：${created.work_order.work_order_no}`,
       { new_work_order_id: created.work_order.id, new_work_order_no: created.work_order.work_order_no });
-    this.audit('work_order', created.work_order.id, 'REOPEN', context.actor, null,
+    this.audit('work_order', created.work_order.id, 'REOPEN', context, null,
       { from_work_order_id: original.id, from_work_order_no: original.work_order_no });
     return { original: this.getWorkOrder(original.id).work_order, work_order: this.getWorkOrder(created.work_order.id).work_order };
   }
@@ -1879,10 +2214,11 @@ class EquipmentService {
     const equipmentId = input.equipment_id ? positiveId(input.equipment_id, '设备') : null;
     if (equipmentId) this.ensure('equipment', equipmentId, '设备不存在');
     let processId = input.process_id ? positiveId(input.process_id, '工序') : null;
-    if (processId) this.ensure('processes', processId, '工序不存在');
+    if (processId) this.assertActiveStructure('process', processId);
     if (!equipmentId && !processId) throw new DomainError('请先扫码或选择巡检的设备', 400, 'VALIDATION_ERROR');
     // 只给了设备时，把它当前所在的工序一并记下来，方便按产线统计。
     if (!processId) processId = this.processIdForEquipment(equipmentId);
+    if (processId) this.assertActiveStructure('process', processId);
     const findings = requireText(input.findings, '巡检发现', 2000);
     const photos = Array.isArray(input.attachments) ? input.attachments : [];
 
@@ -1902,7 +2238,7 @@ class EquipmentService {
         const id = Number(result.lastInsertRowid);
         written.push(...this.storeAttachments('PATROL', id, photos, context));
         const created = this.getPatrolRecord(id);
-        this.audit('patrol_record', id, 'CREATE', context.actor, null, created);
+        this.audit('patrol_record', id, 'CREATE', context, null, created);
         return created;
       });
     } catch (error) {
@@ -1935,7 +2271,10 @@ class EquipmentService {
     return rows;
   }
 
-  getPatrolRecord(id) {
+  getPatrolRecord(id, context = null) {
+    if (context && Number(context.level) === LEVELS.WORKER) {
+      throw new DomainError('当前级别无权查看巡检记录', 403, 'FORBIDDEN');
+    }
     const row = asObject(this.db.prepare(this.patrolQuery('WHERE r.id = ?')).get(positiveId(id, '巡检记录')));
     if (!row) throw new DomainError('巡检记录不存在', 404, 'NOT_FOUND');
     row.attachments = this.listAttachments('PATROL', row.id);
@@ -1961,9 +2300,446 @@ class EquipmentService {
       .run(created.work_order.id, patrol.id);
     this.history(created.work_order.id, 'FROM_PATROL', null, 'SUBMITTED', context.actor,
       `来自巡检 ${patrol.patrol_no}`, { patrol_id: patrol.id, patrol_no: patrol.patrol_no });
-    this.audit('patrol_record', patrol.id, 'CONVERT_TO_WORK_ORDER', context.actor, patrol,
+    this.audit('patrol_record', patrol.id, 'CONVERT_TO_WORK_ORDER', context, patrol,
       { work_order_id: created.work_order.id, work_order_no: created.work_order.work_order_no });
     return { patrol: this.getPatrolRecord(patrol.id), work_order: created.work_order };
+  }
+
+  // ---- 结构化点检与保养 ----
+
+  assertTaskViewer(context) {
+    if (!context || Number(context.level) < LEVELS.TECHNICIAN) {
+      throw new DomainError('当前级别无权查看点检与保养任务', 403, 'FORBIDDEN');
+    }
+  }
+
+  taskTemplate(id) {
+    const template = this.rowById('task_templates', positiveId(id, '模板'));
+    if (!template) throw new DomainError('任务模板不存在', 404, 'NOT_FOUND');
+    template.items = asObjects(this.db.prepare(`
+      SELECT * FROM task_template_items
+      WHERE template_id=? ORDER BY sequence_no, id
+    `).all(template.id));
+    return template;
+  }
+
+  listTaskTemplates(kind, context) {
+    this.assertTaskViewer(context);
+    const taskKind = enumValue(kind, TASK_KINDS, '任务类型');
+    const templates = asObjects(this.db.prepare(`
+      SELECT * FROM task_templates WHERE task_kind=? ORDER BY status, id DESC
+    `).all(taskKind));
+    for (const template of templates) {
+      template.items = asObjects(this.db.prepare(`
+        SELECT * FROM task_template_items
+        WHERE template_id=? ORDER BY sequence_no, id
+      `).all(template.id));
+    }
+    return templates;
+  }
+
+  createTaskTemplate(kind, input, context) {
+    if (Number(context.level) !== LEVELS.MANAGER) {
+      throw new DomainError('只有管理员可以维护点检与保养模板', 403, 'FORBIDDEN');
+    }
+    const taskKind = enumValue(kind, TASK_KINDS, '任务类型');
+    const name = requireText(input.name, '模板名称', 120);
+    const maintenanceLevel = taskKind === 'MAINTENANCE'
+      ? Number(input.maintenance_level) : null;
+    if (taskKind === 'MAINTENANCE' && ![1, 2, 3].includes(maintenanceLevel)) {
+      throw new DomainError('保养模板必须选择一级、二级或三级保养',
+        400, 'VALIDATION_ERROR');
+    }
+    if (!Array.isArray(input.items) || !input.items.length) {
+      throw new DomainError('模板至少需要一个检查项目', 400, 'VALIDATION_ERROR');
+    }
+    if (input.items.length > 100) {
+      throw new DomainError('单个模板最多100个项目', 400, 'VALIDATION_ERROR');
+    }
+    return transaction(this.db, () => {
+      const now = nowIso();
+      const result = this.db.prepare(`
+        INSERT INTO task_templates(
+          task_kind, name, maintenance_level, created_by_user_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(taskKind, name, maintenanceLevel, context.user_id || null, now, now);
+      const templateId = Number(result.lastInsertRowid);
+      const insert = this.db.prepare(`
+        INSERT INTO task_template_items(
+          template_id, item_name, item_type, standard_text, unit, min_value, max_value,
+          requires_photo_on_fail, sequence_no
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      input.items.forEach((item, index) => {
+        const itemType = enumValue(item.item_type || 'CHECK',
+          new Set(['CHECK', 'NUMBER', 'TEXT']), '项目类型');
+        const min = optionalNumber(item.min_value, '最小值');
+        const max = optionalNumber(item.max_value, '最大值');
+        if (min !== null && max !== null && min > max) {
+          throw new DomainError('检查项目最小值不能大于最大值',
+            400, 'VALIDATION_ERROR');
+        }
+        insert.run(templateId, requireText(item.item_name, '项目名称', 160), itemType,
+          optionalText(item.standard_text, 500), optionalText(item.unit, 30), min, max,
+          booleanValue(item.requires_photo_on_fail) ? 1 : 0, index + 1);
+      });
+      const created = this.taskTemplate(templateId);
+      this.audit('task_template', templateId, 'CREATE', context, null, created);
+      return created;
+    });
+  }
+
+  updateTaskTemplateStatus(id, input, context) {
+    if (Number(context.level) !== LEVELS.MANAGER) {
+      throw new DomainError('只有管理员可以维护点检与保养模板', 403, 'FORBIDDEN');
+    }
+    const current = this.taskTemplate(id);
+    const status = enumValue(input.status, new Set(['ACTIVE', 'DISABLED']), '模板状态');
+    this.db.prepare('UPDATE task_templates SET status=?, updated_at=? WHERE id=?')
+      .run(status, nowIso(), current.id);
+    const updated = this.taskTemplate(current.id);
+    this.audit('task_template', current.id, 'STATUS_CHANGE', context, current, updated);
+    return updated;
+  }
+
+  assertTaskTarget(targetType, targetId) {
+    if (targetType === 'PROCESS') this.assertActiveStructure('process', targetId);
+    else this.ensure('equipment', targetId, '设备不存在');
+  }
+
+  createTaskPlan(kind, input, context) {
+    if (Number(context.level) !== LEVELS.MANAGER) {
+      throw new DomainError('只有管理员可以制定点检与保养计划', 403, 'FORBIDDEN');
+    }
+    const taskKind = enumValue(kind, TASK_KINDS, '任务类型');
+    const template = this.taskTemplate(input.template_id);
+    if (template.task_kind !== taskKind || template.status !== 'ACTIVE') {
+      throw new DomainError('所选模板类型不匹配或已停用', 409, 'INVALID_TEMPLATE');
+    }
+    const targetType = enumValue(input.target_type, TASK_TARGETS, '任务对象类型');
+    const targetId = positiveId(input.target_id, '任务对象');
+    this.assertTaskTarget(targetType, targetId);
+    const scheduleType = enumValue(input.schedule_type, TASK_SCHEDULES, '计划周期');
+    const intervalDays = scheduleType === 'INTERVAL'
+      ? positiveId(input.interval_days, '间隔天数') : null;
+    const nextDueAt = scheduleType === 'MANUAL' ? null
+      : (validIso(input.next_due_at, '首次到期时间') || nowIso());
+    const assigneeId = input.assignee_user_id
+      ? positiveId(input.assignee_user_id, '执行人') : null;
+    if (assigneeId) {
+      const assignee = this.publicUser(assigneeId);
+      if (!assignee || assignee.status !== 'ACTIVE' || Number(assignee.level) < LEVELS.TECHNICIAN) {
+        throw new DomainError('执行人必须是启用的技术员或管理员',
+          400, 'INVALID_ASSIGNEE');
+      }
+    }
+    const now = nowIso();
+    const result = this.db.prepare(`
+      INSERT INTO task_plans(
+        task_kind, template_id, name, target_type, target_id, schedule_type,
+        interval_days, next_due_at, assignee_user_id, created_by_user_id,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(taskKind, template.id, requireText(input.name, '计划名称', 120),
+      targetType, targetId, scheduleType, intervalDays, nextDueAt, assigneeId,
+      context.user_id || null, now, now);
+    const created = this.rowById('task_plans', result.lastInsertRowid);
+    this.audit('task_plan', created.id, 'CREATE', context, null, created);
+    this.generateScheduledTasks(taskKind);
+    return created;
+  }
+
+  listTaskPlans(kind, context) {
+    this.assertTaskViewer(context);
+    const taskKind = enumValue(kind, TASK_KINDS, '任务类型');
+    return asObjects(this.db.prepare(`
+      SELECT p.*, t.name AS template_name, t.maintenance_level,
+             u.display_name AS assignee_name
+      FROM task_plans p
+      JOIN task_templates t ON t.id=p.template_id
+      LEFT JOIN users u ON u.id=p.assignee_user_id
+      WHERE p.task_kind=? ORDER BY p.status, p.id DESC
+    `).all(taskKind));
+  }
+
+  updateTaskPlanStatus(id, input, context) {
+    if (Number(context.level) !== LEVELS.MANAGER) {
+      throw new DomainError('只有管理员可以维护点检与保养计划', 403, 'FORBIDDEN');
+    }
+    const current = this.rowById('task_plans', positiveId(id, '计划'));
+    if (!current) throw new DomainError('计划不存在', 404, 'NOT_FOUND');
+    const status = enumValue(input.status, new Set(['ACTIVE', 'DISABLED']), '计划状态');
+    this.db.prepare('UPDATE task_plans SET status=?, updated_at=? WHERE id=?')
+      .run(status, nowIso(), current.id);
+    const updated = this.rowById('task_plans', current.id);
+    this.audit('task_plan', current.id, 'STATUS_CHANGE', context, current, updated);
+    return updated;
+  }
+
+  generateScheduledTasks(kind = null, at = nowIso()) {
+    const taskKind = kind ? enumValue(kind, TASK_KINDS, '任务类型') : null;
+    const now = validIso(at, '生成时间', { required: true });
+    const plans = this.db.prepare(`
+      SELECT * FROM task_plans
+      WHERE status='ACTIVE' AND next_due_at IS NOT NULL AND next_due_at<=?
+        AND (? IS NULL OR task_kind=?)
+      ORDER BY next_due_at
+    `).all(now, taskKind, taskKind);
+    let created = 0;
+    for (const plan of plans) {
+      let dueAt = plan.next_due_at;
+      let guard = 0;
+      while (dueAt && dueAt <= now && guard < 366) {
+        const inserted = this.db.prepare(`
+          INSERT OR IGNORE INTO scheduled_tasks(
+            task_kind, plan_id, template_id, target_type, target_id,
+            assignee_user_id, due_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(plan.task_kind, plan.id, plan.template_id, plan.target_type,
+          plan.target_id, plan.assignee_user_id, dueAt, nowIso(), nowIso());
+        created += Number(inserted.changes);
+        dueAt = nextScheduleAt(dueAt, plan.schedule_type, plan.interval_days);
+        guard += 1;
+      }
+      this.db.prepare('UPDATE task_plans SET next_due_at=?, updated_at=? WHERE id=?')
+        .run(dueAt, nowIso(), plan.id);
+    }
+    return created;
+  }
+
+  taskQuery(where = '') {
+    return `
+      SELECT st.*, tp.name AS plan_name, tt.name AS template_name,
+             tt.maintenance_level, u.display_name AS assignee_name,
+             e.code AS equipment_code, e.standard_name AS equipment_name,
+             p.code AS process_code, p.name AS process_name
+      FROM scheduled_tasks st
+      LEFT JOIN task_plans tp ON tp.id=st.plan_id
+      JOIN task_templates tt ON tt.id=st.template_id
+      LEFT JOIN users u ON u.id=st.assignee_user_id
+      LEFT JOIN equipment e ON st.target_type='EQUIPMENT' AND e.id=st.target_id
+      LEFT JOIN processes p ON st.target_type='PROCESS' AND p.id=st.target_id
+      ${where}
+      ORDER BY CASE st.status WHEN 'PENDING' THEN 0 WHEN 'ABNORMAL' THEN 1 ELSE 2 END,
+               st.due_at DESC, st.id DESC
+    `;
+  }
+
+  listScheduledTasks(kind, context, options = {}) {
+    this.assertTaskViewer(context);
+    const taskKind = enumValue(kind, TASK_KINDS, '任务类型');
+    this.generateScheduledTasks(taskKind);
+    const params = [taskKind];
+    let where = 'WHERE st.task_kind=?';
+    if (options.status) {
+      where += ' AND st.status=?';
+      params.push(upper(options.status));
+    }
+    if (Number(context.level) === LEVELS.TECHNICIAN) {
+      where += ' AND (st.assignee_user_id IS NULL OR st.assignee_user_id=?)';
+      params.push(context.user_id);
+    }
+    return asObjects(this.db.prepare(this.taskQuery(where)).all(...params));
+  }
+
+  getScheduledTask(id, context) {
+    this.assertTaskViewer(context);
+    const task = asObject(this.db.prepare(this.taskQuery('WHERE st.id=?'))
+      .get(positiveId(id, '任务')));
+    if (!task) throw new DomainError('任务不存在', 404, 'NOT_FOUND');
+    if (Number(context.level) === LEVELS.TECHNICIAN
+      && task.assignee_user_id && task.assignee_user_id !== context.user_id) {
+      throw new DomainError('该任务已指派给其他人', 403, 'FORBIDDEN');
+    }
+    task.items = this.taskTemplate(task.template_id).items;
+    task.results = asObjects(this.db.prepare(`
+      SELECT * FROM task_results WHERE task_id=? ORDER BY id
+    `).all(task.id));
+    task.attachments = this.listAttachments('TASK', task.id);
+    task.abnormal_event = asObject(this.db.prepare(
+      'SELECT * FROM abnormal_events WHERE task_id=?'
+    ).get(task.id));
+    return task;
+  }
+
+  createManualTask(kind, input, context) {
+    if (Number(context.level) !== LEVELS.MANAGER) {
+      throw new DomainError('只有管理员可以下发临时任务', 403, 'FORBIDDEN');
+    }
+    const taskKind = enumValue(kind, TASK_KINDS, '任务类型');
+    const template = this.taskTemplate(input.template_id);
+    if (template.task_kind !== taskKind || template.status !== 'ACTIVE') {
+      throw new DomainError('所选模板类型不匹配或已停用', 409, 'INVALID_TEMPLATE');
+    }
+    const targetType = enumValue(input.target_type, TASK_TARGETS, '任务对象类型');
+    const targetId = positiveId(input.target_id, '任务对象');
+    this.assertTaskTarget(targetType, targetId);
+    const assigneeId = input.assignee_user_id
+      ? positiveId(input.assignee_user_id, '执行人') : null;
+    if (assigneeId) {
+      const assignee = this.publicUser(assigneeId);
+      if (assignee.status !== 'ACTIVE' || Number(assignee.level) < LEVELS.TECHNICIAN) {
+        throw new DomainError('执行人必须是启用的技术员或管理员',
+          400, 'INVALID_ASSIGNEE');
+      }
+    }
+    const now = nowIso();
+    const result = this.db.prepare(`
+      INSERT INTO scheduled_tasks(
+        task_kind, template_id, target_type, target_id, assignee_user_id,
+        due_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(taskKind, template.id, targetType, targetId, assigneeId,
+      validIso(input.due_at, '到期时间') || now, now, now);
+    const created = this.getScheduledTask(result.lastInsertRowid, context);
+    this.audit('scheduled_task', created.id, 'CREATE_MANUAL', context, null, created);
+    return created;
+  }
+
+  executeScheduledTask(id, input, context) {
+    const task = this.getScheduledTask(id, context);
+    if (task.status !== 'PENDING') {
+      throw new DomainError('该任务已经处理，不能重复提交', 409, 'TASK_CLOSED');
+    }
+    const resultItems = Array.isArray(input.results) ? input.results : [];
+    const byItem = new Map();
+    for (const item of resultItems) {
+      const itemId = positiveId(item.template_item_id, '检查项目');
+      if (byItem.has(itemId)) {
+        throw new DomainError('同一个检查项目不能重复提交', 400, 'VALIDATION_ERROR');
+      }
+      byItem.set(itemId, item);
+    }
+    if (byItem.size !== task.items.length
+      || task.items.some((item) => !byItem.has(item.id))) {
+      throw new DomainError('请逐项完成全部检查内容', 400, 'TASK_RESULTS_INCOMPLETE');
+    }
+    const normalized = task.items.map((definition) => {
+      const value = byItem.get(definition.id);
+      let resultStatus = enumValue(value.result_status || 'PASS',
+        new Set(['PASS', 'FAIL', 'NA']), '检查结果');
+      let measured = null;
+      if (definition.item_type === 'NUMBER' && resultStatus !== 'NA') {
+        measured = Number(value.measured_value);
+        if (!Number.isFinite(measured)) {
+          throw new DomainError(`“${definition.item_name}”必须填写测量值`,
+            400, 'VALIDATION_ERROR');
+        }
+        if ((definition.min_value !== null && measured < definition.min_value)
+          || (definition.max_value !== null && measured > definition.max_value)) {
+          resultStatus = 'FAIL';
+        }
+      }
+      const textValue = definition.item_type === 'TEXT' && resultStatus !== 'NA'
+        ? requireText(value.text_value, definition.item_name, 1000) : null;
+      return {
+        definition, resultStatus, measured, textValue,
+        note: optionalText(value.note, 1000),
+      };
+    });
+    const failed = normalized.filter((item) => item.resultStatus === 'FAIL');
+    const photos = Array.isArray(input.attachments) ? input.attachments : [];
+    if (failed.some((item) => item.definition.requires_photo_on_fail) && !photos.length) {
+      throw new DomainError('异常项目要求上传现场照片', 400, 'PHOTO_REQUIRED');
+    }
+    const written = [];
+    try {
+      return transaction(this.db, () => {
+        const now = nowIso();
+        const insert = this.db.prepare(`
+          INSERT INTO task_results(
+            task_id, template_item_id, result_status, measured_value,
+            text_value, note, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const item of normalized) {
+          insert.run(task.id, item.definition.id, item.resultStatus, item.measured,
+            item.textValue, item.note, now);
+        }
+        written.push(...this.storeAttachments('TASK', task.id, photos, context));
+        const status = failed.length ? 'ABNORMAL' : 'COMPLETED';
+        const summary = optionalText(input.summary, 2000)
+          || (failed.length ? `${failed.length}项异常` : '全部项目正常');
+        this.db.prepare(`
+          UPDATE scheduled_tasks
+          SET status=?, executor=?, executor_user_id=?, started_at=COALESCE(started_at, ?),
+              completed_at=?, summary=?, updated_at=?
+          WHERE id=?
+        `).run(status, context.actor, context.user_id || null, now, now, summary, now, task.id);
+        if (failed.length) {
+          const description = failed.map((item) =>
+            `${item.definition.item_name}${item.note ? `：${item.note}` : ''}`).join('；');
+          this.db.prepare(`
+            INSERT INTO abnormal_events(
+              task_id, description, status, created_at, updated_at
+            ) VALUES (?, ?, 'OPEN', ?, ?)
+          `).run(task.id, description, now, now);
+        }
+        const updated = this.getScheduledTask(task.id, context);
+        this.audit('scheduled_task', task.id, status, context, task, updated);
+        return updated;
+      });
+    } catch (error) {
+      for (const item of written) { try { fs.unlinkSync(item.absolute); } catch { /* ignore */ } }
+      throw error;
+    }
+  }
+
+  convertTaskAbnormalToWorkOrder(id, input, context) {
+    const task = this.getScheduledTask(id, context);
+    if (task.status !== 'ABNORMAL' || !task.abnormal_event
+      || task.abnormal_event.status !== 'OPEN') {
+      throw new DomainError('该任务没有待处理异常', 409, 'NO_OPEN_ABNORMAL');
+    }
+    const processId = task.target_type === 'PROCESS'
+      ? task.target_id : this.processIdForEquipment(task.target_id);
+    if (!processId) {
+      throw new DomainError('目标设备尚未安装，无法自动确定维修工序',
+        409, 'PROCESS_REQUIRED');
+    }
+    const created = this.createWorkOrder({
+      process_id: processId,
+      equipment_id: task.target_type === 'EQUIPMENT' ? task.target_id : null,
+      fault_code_id: input.fault_code_id,
+      urgency: input.urgency || 'NORMAL',
+      is_downtime: input.is_downtime,
+      description: input.description
+        || `由${task.task_kind === 'INSPECTION' ? '点检' : '保养'}任务 #${task.id} 转入：${task.abnormal_event.description}`,
+    }, context);
+    const now = nowIso();
+    transaction(this.db, () => {
+      this.db.prepare(`
+        UPDATE scheduled_tasks SET status='CONVERTED', work_order_id=?, updated_at=? WHERE id=?
+      `).run(created.work_order.id, now, task.id);
+      this.db.prepare(`
+        UPDATE abnormal_events
+        SET status='CONVERTED', work_order_id=?, updated_at=? WHERE task_id=?
+      `).run(created.work_order.id, now, task.id);
+    });
+    this.audit('scheduled_task', task.id, 'CONVERT_TO_WORK_ORDER', context, task,
+      { work_order_id: created.work_order.id });
+    return { task: this.getScheduledTask(task.id, context), work_order: created.work_order };
+  }
+
+  closeTaskAbnormal(id, input, context) {
+    const task = this.getScheduledTask(id, context);
+    if (task.status !== 'ABNORMAL' || task.abnormal_event?.status !== 'OPEN') {
+      throw new DomainError('该任务没有待关闭异常', 409, 'NO_OPEN_ABNORMAL');
+    }
+    const resolution = requireText(input.resolution, '异常处理说明', 1000);
+    const now = nowIso();
+    this.db.prepare(`
+      UPDATE abnormal_events
+      SET status='CLOSED', description=description || ?, closed_by_user_id=?,
+          closed_at=?, updated_at=?
+      WHERE task_id=?
+    `).run(`；处理：${resolution}`, context.user_id || null, now, now, task.id);
+    this.db.prepare(`
+      UPDATE scheduled_tasks SET status='COMPLETED', summary=?, updated_at=? WHERE id=?
+    `).run(resolution, now, task.id);
+    const updated = this.getScheduledTask(task.id, context);
+    this.audit('scheduled_task', task.id, 'ABNORMAL_CLOSED', context, task, updated);
+    return updated;
   }
 
   // ---- 故障代码（故障类别 → 故障部位 → 故障现象）----
@@ -2011,7 +2787,7 @@ class EquipmentService {
         Number(this.db.prepare('SELECT COALESCE(MAX(sort_order), 0) + 1 AS next FROM fault_codes').get().next),
         now, now);
       const created = this.getFaultCode(result.lastInsertRowid);
-      this.audit('fault_code', created.id, 'CREATE', context.actor, null, created);
+      this.audit('fault_code', created.id, 'CREATE', context, null, created);
       return created;
     } catch (error) {
       this.rethrowConstraint(error, '相同的故障代码或“类别+部位+现象”组合已存在');
@@ -2031,7 +2807,7 @@ class EquipmentService {
       `).run(payload.category, payload.part, payload.symptom, payload.suggested_action, payload.default_urgency,
         payload.requires_downtime, payload.requires_photo, payload.is_common, payload.equipment_type_id, status, nowIso(), current.id);
       const updated = this.getFaultCode(current.id);
-      this.audit('fault_code', current.id, 'UPDATE', context.actor, current, updated);
+      this.audit('fault_code', current.id, 'UPDATE', context, current, updated);
       return updated;
     } catch (error) {
       this.rethrowConstraint(error, '相同的“类别+部位+现象”组合已存在');
@@ -2045,7 +2821,7 @@ class EquipmentService {
     const used = Number(this.db.prepare('SELECT COUNT(*) AS count FROM work_orders WHERE fault_code_id=?').get(current.id).count);
     if (used) throw new DomainError(`该故障代码已被${used}张工单使用，只能停用不能删除`, 409, 'FAULT_CODE_IN_USE');
     this.db.prepare('DELETE FROM fault_codes WHERE id=?').run(current.id);
-    this.audit('fault_code', current.id, 'DELETE', context.actor, current, null);
+    this.audit('fault_code', current.id, 'DELETE', context, current, null);
     return current;
   }
 
@@ -2102,13 +2878,7 @@ class EquipmentService {
   // 落盘 + 写表。调用方负责事务；失败时用返回的路径清理已经写下的文件。
   storeAttachment(targetType, targetId, input, context) {
     if (!ATTACHMENT_TARGETS.has(targetType)) throw new DomainError('不支持的附件对象类型', 400, 'VALIDATION_ERROR');
-    if (typeof input?.content_base64 !== 'string' || !input.content_base64) {
-      throw new DomainError('照片内容为空', 400, 'VALIDATION_ERROR');
-    }
-    let buffer;
-    try { buffer = Buffer.from(input.content_base64, 'base64'); }
-    catch { throw new DomainError('照片编码无效', 400, 'VALIDATION_ERROR'); }
-    if (!buffer.length) throw new DomainError('照片内容为空', 400, 'VALIDATION_ERROR');
+    const buffer = decodeAttachmentBase64(input?.content_base64);
     if (buffer.length > MAX_ATTACHMENT_BYTES) {
       throw new DomainError(`单张照片不能超过${Math.floor(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB，请重新拍摄`, 400, 'ATTACHMENT_TOO_LARGE');
     }
@@ -2142,6 +2912,19 @@ class EquipmentService {
     if (!Array.isArray(items) || !items.length) return [];
     if (items.length > MAX_ATTACHMENTS_PER_TARGET) {
       throw new DomainError(`最多只能上传${MAX_ATTACHMENTS_PER_TARGET}张照片`, 400, 'TOO_MANY_ATTACHMENTS');
+    }
+    const existing = this.db.prepare(`
+      SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes
+      FROM attachments WHERE target_type=? AND target_id=?
+    `).get(targetType, Number(targetId));
+    const decoded = items.map((item) => decodeAttachmentBase64(item?.content_base64));
+    if (Number(existing.count) + items.length > MAX_ATTACHMENTS_PER_TARGET) {
+      throw new DomainError(`最多只能上传${MAX_ATTACHMENTS_PER_TARGET}张照片`, 409, 'TOO_MANY_ATTACHMENTS');
+    }
+    const totalBytes = Number(existing.bytes) + decoded.reduce((sum, item) => sum + item.length, 0);
+    if (totalBytes > MAX_ATTACHMENTS_TOTAL_BYTES) {
+      throw new DomainError('同一记录的照片合计不能超过12MB，请压缩后重试',
+        400, 'ATTACHMENTS_TOTAL_TOO_LARGE');
     }
     const written = [];
     try {
@@ -2184,12 +2967,14 @@ class EquipmentService {
     if (!row) throw new DomainError('照片不存在', 404, 'NOT_FOUND');
     // 普工只能看自己报修的工单的照片，和工单本身的可见性保持一致。
     if (row.target_type === 'WORK_ORDER') this.getWorkOrder(row.target_id, context);
+    else if (row.target_type === 'TASK') this.getScheduledTask(row.target_id, context);
     else if (context && Number(context.level) === LEVELS.WORKER) {
       throw new DomainError('当前级别无权查看巡检照片', 403, 'FORBIDDEN');
     }
     const absolute = path.join(this.attachmentRoot, row.file_path);
     // 防路径穿越：file_path 是系统自己生成的，但仍然按静态服务的同一套规则再守一次。
-    if (!absolute.startsWith(this.attachmentRoot) || !fs.existsSync(absolute)) {
+    const relative = path.relative(this.attachmentRoot, absolute);
+    if (relative.startsWith('..') || path.isAbsolute(relative) || !fs.existsSync(absolute)) {
       throw new DomainError('照片文件已丢失', 404, 'NOT_FOUND');
     }
     return { ...row, absolute };
@@ -2208,13 +2993,14 @@ class EquipmentService {
     }
     this.db.prepare('DELETE FROM attachments WHERE id=?').run(row.id);
     try { fs.unlinkSync(path.join(this.attachmentRoot, row.file_path)); } catch { /* 文件已丢失也要清掉记录 */ }
-    this.audit('attachment', row.id, 'DELETE', context.actor, row, null);
+    this.audit('attachment', row.id, 'DELETE', context, row, null);
     return { id: row.id };
   }
 
   // ---- 三级成员管理 ----
 
-  listUsers() {
+  listUsers(context = null) {
+    if (context) assertRole(context.role, [ROLES.ADMIN]);
     return asObjects(this.db.prepare(`
       SELECT u.id, u.username, u.display_name, u.level, u.status, u.must_change_password,
              u.phone, u.created_at, u.updated_at,
@@ -2252,7 +3038,7 @@ class EquipmentService {
         VALUES (?, ?, ?, ?, ?, 'ACTIVE', 1, ?, ?, ?)
       `).run(username, displayName, level, hash, salt, optionalText(input.phone, 30), now, now);
       const created = this.publicUser(result.lastInsertRowid);
-      this.audit('user', created.id, 'CREATE', context.actor, null, created);
+      this.audit('user', created.id, 'CREATE', context, null, created);
       // 初始密码只在创建响应里返回这一次，之后系统不再保存明文。
       return { ...created, initial_password: password };
     } catch (error) {
@@ -2276,7 +3062,7 @@ class EquipmentService {
     // 降级或停用后立即失效已有会话，避免旧权限继续生效。
     if (level !== current.level || status !== current.status) destroyUserSessions(this.db, current.id);
     const updated = this.publicUser(current.id);
-    this.audit('user', current.id, 'UPDATE', context.actor, current, updated);
+    this.audit('user', current.id, 'UPDATE', context, current, updated);
     return updated;
   }
 
@@ -2289,7 +3075,7 @@ class EquipmentService {
       UPDATE users SET password_hash=?, password_salt=?, must_change_password=1, updated_at=? WHERE id=?
     `).run(hash, salt, nowIso(), current.id);
     destroyUserSessions(this.db, current.id);
-    this.audit('user', current.id, 'RESET_PASSWORD', context.actor, null, { username: current.username });
+    this.audit('user', current.id, 'RESET_PASSWORD', context, null, { username: current.username });
     return { ...this.publicUser(current.id), initial_password: password };
   }
 
@@ -2307,21 +3093,86 @@ class EquipmentService {
     this.db.prepare(`
       UPDATE users SET password_hash=?, password_salt=?, must_change_password=0, updated_at=? WHERE id=?
     `).run(hash, salt, nowIso(), row.id);
-    this.audit('user', row.id, 'CHANGE_PASSWORD', row.display_name, null, { username: row.username });
+    destroyUserSessions(this.db, row.id);
+    this.audit('user', row.id, 'CHANGE_PASSWORD', {
+      actor: row.display_name, user_id: row.id, username: row.username,
+    }, null, { username: row.username });
     return this.publicUser(row.id);
   }
 
-  login(username, password) {
+  login(username, password, metadata = {}) {
     const name = String(username || '').trim().toLowerCase();
+    const sourceIp = String(metadata.source_ip || 'unknown').slice(0, 100);
+    this.assertLoginAllowed(name, sourceIp);
     const row = name ? this.db.prepare('SELECT * FROM users WHERE username=?').get(name) : null;
     // 用户不存在时也做一次哈希运算，避免用响应时间区分"账号不存在"和"密码错误"。
     const valid = row
       ? verifyPassword(password, row.password_hash, row.password_salt)
       : (hashPassword(String(password ?? '')), false);
-    if (!row || !valid) throw new DomainError('工号或密码不正确', 401, 'INVALID_CREDENTIALS');
-    if (row.status !== 'ACTIVE') throw new DomainError('该账号已停用，请联系管理员', 403, 'ACCOUNT_DISABLED');
-    this.audit('user', row.id, 'LOGIN', row.display_name, null, { username: row.username });
+    if (!row || !valid) {
+      this.recordLoginAttempt(name, sourceIp, false, 'INVALID_CREDENTIALS');
+      this.audit('user', row?.id || 0, 'LOGIN_FAILED', row ? {
+        actor: row.display_name, user_id: row.id, username: row.username,
+      } : `未登录:${name || '空账号'}`, null,
+        { username: name || null, source_ip: sourceIp, reason: 'INVALID_CREDENTIALS' });
+      throw new DomainError('工号或密码不正确', 401, 'INVALID_CREDENTIALS');
+    }
+    if (row.status !== 'ACTIVE') {
+      this.recordLoginAttempt(name, sourceIp, false, 'ACCOUNT_DISABLED');
+      this.audit('user', row.id, 'LOGIN_FAILED', {
+        actor: row.display_name, user_id: row.id, username: row.username,
+      }, null, { username: row.username, source_ip: sourceIp, reason: 'ACCOUNT_DISABLED' });
+      throw new DomainError('该账号已停用，请联系管理员', 403, 'ACCOUNT_DISABLED');
+    }
+    this.recordLoginAttempt(name, sourceIp, true, 'LOGIN');
+    this.audit('user', row.id, 'LOGIN', {
+      actor: row.display_name, user_id: row.id, username: row.username,
+    }, null, { username: row.username, source_ip: sourceIp });
     return this.publicUser(row.id);
+  }
+
+  assertLoginAllowed(username, sourceIp) {
+    const cutoff = new Date(Date.now() - LOGIN_LOCK_MINUTES * 60 * 1000).toISOString();
+    if (username) {
+      const failures = Number(this.db.prepare(`
+        SELECT COUNT(*) AS count FROM login_attempts
+        WHERE username=? AND succeeded=0 AND attempted_at>=?
+          AND id > COALESCE((
+            SELECT MAX(id) FROM login_attempts WHERE username=? AND succeeded=1
+          ), 0)
+      `).get(username, cutoff, username).count);
+      if (failures >= LOGIN_MAX_FAILURES) {
+        const user = this.db.prepare(
+          'SELECT id, username, display_name FROM users WHERE username=?'
+        ).get(username);
+        this.audit('user', user?.id || 0, 'LOGIN_LOCKED', user ? {
+          actor: user.display_name, user_id: user.id, username: user.username,
+        } : `未登录:${username}`, null, {
+          username, source_ip: sourceIp, failures, reason: 'ACCOUNT_LOCKED',
+        });
+        throw new DomainError(
+          `该账号登录失败次数过多，请${LOGIN_LOCK_MINUTES}分钟后再试`,
+          429, 'ACCOUNT_LOCKED');
+      }
+    }
+    const ipFailures = Number(this.db.prepare(`
+      SELECT COUNT(*) AS count FROM login_attempts
+      WHERE source_ip=? AND succeeded=0 AND attempted_at>=?
+    `).get(sourceIp, cutoff).count);
+    if (ipFailures >= LOGIN_IP_MAX_FAILURES) {
+      this.audit('security', 0, 'LOGIN_RATE_LIMITED', `来源:${sourceIp}`, null,
+        { source_ip: sourceIp, failures: ipFailures });
+      throw new DomainError('登录请求过于频繁，请稍后再试', 429, 'LOGIN_RATE_LIMITED');
+    }
+  }
+
+  recordLoginAttempt(username, sourceIp, succeeded, reason) {
+    this.db.prepare(`
+      INSERT INTO login_attempts(username, source_ip, succeeded, reason, attempted_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(username || '', sourceIp, succeeded ? 1 : 0, reason || null, nowIso());
+    // 登录日志保留90天；每次登录顺手清理，不另起常驻定时器。
+    this.db.prepare(`DELETE FROM login_attempts WHERE attempted_at < datetime('now', '-90 days')`).run();
   }
 
   assertNotLastAdmin(excludedUserId) {
@@ -2331,7 +3182,8 @@ class EquipmentService {
     if (!remaining) throw new DomainError('系统必须保留至少一个启用的管理员账号', 409, 'LAST_ADMIN');
   }
 
-  auditLogs(limit = 200) {
+  auditLogs(limit = 200, context = null) {
+    if (context) assertRole(context.role, [ROLES.ADMIN]);
     const safeLimit = Math.min(Math.max(Number(limit) || 200, 1), 1000);
     return asObjects(this.db.prepare('SELECT * FROM audit_logs ORDER BY id DESC LIMIT ?').all(safeLimit));
   }
@@ -2361,7 +3213,7 @@ class EquipmentService {
     }
     if (next === equipment.status) return null;
     this.db.prepare('UPDATE equipment SET status=?, updated_at=? WHERE id=?').run(next, nowIso(), equipment.id);
-    this.audit('equipment', equipment.id, 'STATUS_SYNC', context?.actor || '系统',
+    this.audit('equipment', equipment.id, 'STATUS_SYNC', context || '系统',
       { status: equipment.status }, { status: next, baseline_status: baseline, open_work_orders: openOrders.length });
     return next;
   }
@@ -2408,11 +3260,16 @@ class EquipmentService {
     `).run(workOrderId, eventType, fromStatus, toStatus, actor, note || null, json(details), nowIso());
   }
 
-  audit(entityType, entityId, action, actor, before, after) {
+  audit(entityType, entityId, action, actorOrContext, before, after) {
+    const actorContext = actorOrContext && typeof actorOrContext === 'object' ? actorOrContext : null;
+    const actor = actorContext?.actor || actorContext?.display_name || String(actorOrContext || '系统');
     this.db.prepare(`
-      INSERT INTO audit_logs(entity_type, entity_id, action, actor, before_json, after_json, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(entityType, Number(entityId), action, actor, json(before), json(after), nowIso());
+      INSERT INTO audit_logs(
+        entity_type, entity_id, action, actor, actor_user_id, actor_username,
+        before_json, after_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(entityType, Number(entityId), action, actor, actorContext?.user_id || null,
+      actorContext?.username || null, json(before), json(after), nowIso());
   }
 
   ensure(table, id, message) {
@@ -2421,6 +3278,55 @@ class EquipmentService {
     if (!this.db.prepare(`SELECT id FROM ${table} WHERE id=?`).get(id)) {
       throw new DomainError(message, 404, 'NOT_FOUND');
     }
+  }
+
+  assertActiveStructure(type, id) {
+    const targetId = positiveId(id, '结构');
+    const config = {
+      factory: {
+        table: 'factories', missing: '工厂不存在',
+        sql: `SELECT f.id FROM factories f WHERE f.id=? AND f.status='ACTIVE'`,
+      },
+      workshop: {
+        table: 'workshops', missing: '车间不存在',
+        sql: `SELECT w.id FROM workshops w
+              JOIN factories f ON f.id=w.factory_id
+              WHERE w.id=? AND w.status='ACTIVE' AND f.status='ACTIVE'`,
+      },
+      line: {
+        table: 'production_lines', missing: '产线不存在',
+        sql: `SELECT l.id FROM production_lines l
+              JOIN workshops w ON w.id=l.workshop_id
+              JOIN factories f ON f.id=w.factory_id
+              WHERE l.id=? AND l.status='ACTIVE' AND w.status='ACTIVE' AND f.status='ACTIVE'`,
+      },
+      process: {
+        table: 'processes', missing: '工序不存在',
+        sql: `SELECT p.id FROM processes p
+              JOIN production_lines l ON l.id=p.line_id
+              JOIN workshops w ON w.id=l.workshop_id
+              JOIN factories f ON f.id=w.factory_id
+              WHERE p.id=? AND p.status='ACTIVE' AND l.status='ACTIVE'
+                AND w.status='ACTIVE' AND f.status='ACTIVE'`,
+      },
+      position: {
+        table: 'positions', missing: '机位不存在',
+        sql: `SELECT pos.id FROM positions pos
+              JOIN processes p ON p.id=pos.process_id
+              JOIN production_lines l ON l.id=p.line_id
+              JOIN workshops w ON w.id=l.workshop_id
+              JOIN factories f ON f.id=w.factory_id
+              WHERE pos.id=? AND pos.status='ACTIVE' AND p.status='ACTIVE'
+                AND l.status='ACTIVE' AND w.status='ACTIVE' AND f.status='ACTIVE'`,
+      },
+    }[String(type || '').toLowerCase()];
+    if (!config) throw new DomainError('结构类型无效', 400, 'VALIDATION_ERROR');
+    this.ensure(config.table, targetId, config.missing);
+    if (!this.db.prepare(config.sql).get(targetId)) {
+      throw new DomainError('该结构或其上级已停用，不能创建新的业务记录',
+        409, 'STRUCTURE_DISABLED');
+    }
+    return targetId;
   }
 
   rowById(table, id) {

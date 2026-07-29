@@ -20,6 +20,7 @@ function fixture() {
   const seed = service.listUsers().find((item) => item.username === DEFAULT_ADMIN_USERNAME);
   service.changeOwnPassword(seed.id, DEFAULT_ADMIN_PASSWORD, 'manager-2026');
   const manager = contextFor(service.publicUser(seed.id));
+  const reviewer = contextFor(service.createUser({ username: 'm002', display_name: '审核管理员', level: 3 }, manager));
   const worker = contextFor(service.createUser({ username: 'w001', display_name: '普工李四', level: 1 }, manager));
   const technician = contextFor(service.createUser({ username: 't001', display_name: '技术员张三', level: 2 }, manager));
 
@@ -35,7 +36,7 @@ function fixture() {
     action: 'INSTALL', equipment_id: equipment.id, to_position_id: position.id, reason: '初始安装',
   }, manager);
   const change = service.listCompositionChanges()[0];
-  service.reviewCompositionChange(change.id, { decision: 'APPROVED' }, manager);
+  service.reviewCompositionChange(change.id, { decision: 'APPROVED' }, reviewer);
 
   const faultCode = service.listFaultCodes().codes.find((item) => item.code === 'ME-BRG-NOISE');
   const cleanup = () => { db.close(); fs.rmSync(attachmentRoot, { recursive: true, force: true }); };

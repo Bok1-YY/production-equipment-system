@@ -9,11 +9,16 @@ const state = {
   patrols: [],
   photos: { repair: [], patrol: [] },   // 待上传的照片，按表单分组
   organization: null,
+  activeOrganization: null,
   organizationTree: [],
   equipment: [],
   equipmentTypes: [],
   workOrders: [],
   selectedWorkOrder: null,
+  taskModules: {
+    inspection: { templates: [], plans: [], tasks: [] },
+    maintenance: { templates: [], plans: [], tasks: [] },
+  },
   expandedNodes: new Set(JSON.parse(localStorage.getItem('ysm-expanded-tree') || '[]')),
   treeInitialized: false,
 };
@@ -81,6 +86,9 @@ let scannerPlugin = null;
 let scanBusy = false;
 let repairNotificationsPlugin = null;
 let openingNotification = false;
+let serverSettingsPlugin = null;
+let mobileActionReturnFocus = null;
+let mobileActionHistoryEntry = false;
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
@@ -196,7 +204,7 @@ function attachmentStrip(attachments) {
   if (!attachments?.length) return '';
   return `<div class="photo-grid readonly">${attachments.map((item) => `
     <figure class="photo-thumb"><img src="/api/attachments/${item.id}/file" loading="lazy"
-      alt="${escapeHtml(item.original_name || '现场照片')}" onclick="openPhoto(${item.id})"></figure>`).join('')}</div>`;
+      alt="${escapeHtml(item.original_name || '现场照片')}" data-action="open-photo" data-id="${item.id}"></figure>`).join('')}</div>`;
 }
 
 function fileToBase64(file) {
@@ -210,11 +218,25 @@ function fileToBase64(file) {
 
 // 身份由HttpOnly会话Cookie携带，页面上不再有任何可自选的角色。
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
+  const { idempotent = false, ...requestOptions } = options;
+  const headers = { 'Content-Type': 'application/json', ...(requestOptions.headers || {}) };
+  if (idempotent && !headers['Idempotency-Key']) {
+    headers['Idempotency-Key'] = globalThis.crypto?.randomUUID?.()
+      || `ysm-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+  const send = () => fetch(path, {
+    ...requestOptions,
     credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    headers,
   });
+  let response;
+  try {
+    response = await send();
+  } catch (error) {
+    if (!idempotent) throw error;
+    // 弱网断开时只重试一次，并复用同一个Idempotency-Key。
+    response = await send();
+  }
   const payload = await response.json().catch(() => null);
   if (!response.ok || !payload?.ok) {
     const error = new Error(payload?.error?.message || `请求失败：${response.status}`);
@@ -258,6 +280,7 @@ async function guarded(task, successMessage) {
 function showAuthGate(mode = 'login') {
   const scanButton = document.querySelector('#native-scan-button');
   if (scanButton) scanButton.hidden = true;
+  document.querySelector('#mobile-more-button').hidden = true;
   stopNativeRepairNotifications();
   document.querySelector('#auth-gate').hidden = false;
   document.querySelector('#identity').hidden = true;
@@ -269,6 +292,108 @@ function showAuthGate(mode = 'login') {
 function hideAuthGate() {
   document.querySelector('#auth-gate').hidden = true;
   document.querySelector('#identity').hidden = false;
+}
+
+function sourceActionLabel(source) {
+  if (source.dataset.mobileLabel) return source.dataset.mobileLabel;
+  return [...source.childNodes]
+    .filter((node) => node.nodeType === Node.TEXT_NODE)
+    .map((node) => node.textContent)
+    .join(' ')
+    .trim() || source.getAttribute('aria-label') || source.textContent.trim() || '执行操作';
+}
+
+function sourceActionVisible(source) {
+  return Boolean(source && !source.hidden && !source.closest('[hidden]'));
+}
+
+function invokeSourceAction(source) {
+  const fileInput = source.matches('label') ? source.querySelector('input[type="file"]') : null;
+  if (fileInput) fileInput.click(); else source.click();
+}
+
+function closeMobileActionSheet({ fromHistory = false, restoreFocus = true } = {}) {
+  const sheet = document.querySelector('#mobile-action-sheet');
+  if (sheet.hidden) return;
+  sheet.hidden = true;
+  document.body.classList.remove('mobile-action-open');
+  if (mobileActionHistoryEntry && !fromHistory) history.back();
+  mobileActionHistoryEntry = false;
+  if (restoreFocus && mobileActionReturnFocus?.isConnected) mobileActionReturnFocus.focus();
+  mobileActionReturnFocus = null;
+}
+
+function openMobileActionSheet(title, sources, opener = document.activeElement) {
+  const sheet = document.querySelector('#mobile-action-sheet');
+  const list = document.querySelector('#mobile-action-list');
+  const actions = sources.filter(sourceActionVisible);
+  document.querySelector('#mobile-action-title').textContent = title || '更多操作';
+  list.replaceChildren();
+  for (const source of actions) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = sourceActionLabel(source);
+    button.className = source.classList.contains('danger') ? 'danger' : 'secondary';
+    button.disabled = Boolean(source.disabled);
+    button.addEventListener('click', () => {
+      closeMobileActionSheet({ restoreFocus: false });
+      invokeSourceAction(source);
+    });
+    list.append(button);
+  }
+  if (!actions.length) {
+    const empty = document.createElement('p');
+    empty.className = 'mobile-action-empty';
+    empty.textContent = '当前没有可用操作';
+    list.append(empty);
+  }
+  mobileActionReturnFocus = opener;
+  if (sheet.hidden) {
+    history.pushState({ ysmMobileAction: true }, '');
+    mobileActionHistoryEntry = true;
+  }
+  sheet.hidden = false;
+  document.body.classList.add('mobile-action-open');
+  requestAnimationFrame(() => list.querySelector('button:not(:disabled)')?.focus()
+    || document.querySelector('.mobile-action-close').focus());
+}
+
+function setupMobileToolbars() {
+  for (const toolbar of document.querySelectorAll('[data-mobile-toolbar]')) {
+    if (toolbar.querySelector('.mobile-toolbar-more')) continue;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'secondary mobile-toolbar-more';
+    button.textContent = '更多操作';
+    button.setAttribute('aria-haspopup', 'dialog');
+    button.addEventListener('click', () => openMobileActionSheet(
+      toolbar.dataset.mobileToolbar,
+      [...toolbar.querySelectorAll(':scope > [data-mobile-overflow]')],
+      button,
+    ));
+    toolbar.append(button);
+  }
+  refreshMobileToolbars();
+}
+
+function refreshMobileToolbars() {
+  for (const toolbar of document.querySelectorAll('[data-mobile-toolbar]')) {
+    const sources = [...toolbar.querySelectorAll(':scope > [data-mobile-overflow]')];
+    const more = toolbar.querySelector('.mobile-toolbar-more');
+    if (more) more.hidden = !sources.some(sourceActionVisible);
+  }
+}
+
+function openMobileHeaderActions() {
+  openMobileActionSheet(
+    state.me ? `${state.me.display_name} · 账号操作` : '账号操作',
+    [
+      document.querySelector('#server-settings-button'),
+      document.querySelector('#open-change-password'),
+      document.querySelector('#logout'),
+    ],
+    document.querySelector('#mobile-more-button'),
+  );
 }
 
 function getNativeScanner() {
@@ -286,6 +411,97 @@ function refreshNativeScanButton() {
   const button = document.querySelector('#native-scan-button');
   if (!button) return;
   button.hidden = !(state.me && getNativeScanner());
+}
+
+function getNativeServerSettings() {
+  const capacitor = window.Capacitor;
+  if (!capacitor?.isNativePlatform?.() ||
+      !capacitor?.isPluginAvailable?.('ServerSettings')) return null;
+  if (!serverSettingsPlugin) {
+    serverSettingsPlugin = capacitor.Plugins?.ServerSettings ||
+      capacitor.registerPlugin?.('ServerSettings');
+  }
+  return serverSettingsPlugin;
+}
+
+function refreshNativeServerSettingsButton() {
+  const button = document.querySelector('#server-settings-button');
+  if (button) button.hidden = !getNativeServerSettings();
+}
+
+function setServerTestStatus(message = '', tone = '') {
+  const status = document.querySelector('#server-test-status');
+  status.textContent = message;
+  status.className = `server-test-status${tone ? ` ${tone}` : ''}`;
+}
+
+async function openServerSettings() {
+  const plugin = getNativeServerSettings();
+  if (!plugin) return;
+  try {
+    const config = await plugin.getConfig();
+    document.querySelector('#server-url').value = config.serverUrl || '';
+    document.querySelector('#server-default-url').textContent =
+      `安装包默认地址：${config.defaultUrl}${config.custom ? '（当前使用了自定义地址）' : '（当前正在使用）'}`;
+    setServerTestStatus(
+      config.allowPrivateHttp
+        ? '测试版允许局域网 HTTP 私有 IP；云服务器请使用 HTTPS。'
+        : '正式版只接受 HTTPS 地址。',
+    );
+    document.querySelector('#server-settings-drawer').hidden = false;
+    document.querySelector('#server-url').focus();
+  } catch (error) {
+    flash(error.message || '读取服务器配置失败', 'error');
+  }
+}
+
+function closeServerSettings() {
+  document.querySelector('#server-settings-drawer').hidden = true;
+}
+
+async function testServerConnection() {
+  const plugin = getNativeServerSettings();
+  if (!plugin) return;
+  const button = document.querySelector('#test-server-connection');
+  button.disabled = true;
+  setServerTestStatus('正在检查服务器……');
+  try {
+    const result = await plugin.testConnection({
+      serverUrl: document.querySelector('#server-url').value,
+    });
+    document.querySelector('#server-url').value = result.serverUrl;
+    setServerTestStatus(`连接成功（HTTP ${result.status}）`, 'success');
+  } catch (error) {
+    setServerTestStatus(error.message || '连接失败，请检查地址和网络', 'error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function saveServerSettings(event) {
+  event.preventDefault();
+  const plugin = getNativeServerSettings();
+  if (!plugin) return;
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  button.disabled = true;
+  setServerTestStatus('正在保存，APP 即将重新连接……');
+  try {
+    await plugin.save({ serverUrl: document.querySelector('#server-url').value });
+  } catch (error) {
+    setServerTestStatus(error.message || '保存失败', 'error');
+    button.disabled = false;
+  }
+}
+
+async function resetServerSettings() {
+  const plugin = getNativeServerSettings();
+  if (!plugin || !window.confirm('恢复安装包内置的服务器地址并重新连接？')) return;
+  setServerTestStatus('正在恢复默认地址，APP 即将重新连接……');
+  try {
+    await plugin.reset();
+  } catch (error) {
+    setServerTestStatus(error.message || '恢复失败', 'error');
+  }
 }
 
 function getNativeRepairNotifications() {
@@ -333,7 +549,14 @@ async function configureNativeRepairNotifications() {
     return;
   }
   try {
-    const result = await plugin.startMonitoring({ userId: Number(state.me.user_id) });
+    const device = await api('/api/notification-device', {
+      method: 'POST',
+      body: { device_label: `android-${Number(state.me.user_id)}` },
+    });
+    const result = await plugin.startMonitoring({
+      userId: Number(state.me.user_id),
+      notificationToken: device.token,
+    });
     if (result?.enabled === false) {
       flash('报修通知未开启：请在安卓系统设置中允许通知权限', 'error');
       return;
@@ -357,6 +580,7 @@ async function startSession() {
   hideAuthGate();
   document.querySelector('#identity-name').textContent = me.display_name;
   document.querySelector('#identity-level').textContent = `${LEVEL_NAMES[me.level] || ''} · ${me.username}`;
+  document.querySelector('#mobile-more-button').hidden = false;
   applyLevelUi();
   await guarded(async () => { await refreshAll(); await handleScanLink(); });
   await configureNativeRepairNotifications();
@@ -398,6 +622,7 @@ function applyLevelUi() {
   const target = firstVisible || document.querySelector('.nav-item[data-view="repairs"]');
   activateView(target.dataset.view);
   refreshNativeScanButton();
+  refreshMobileToolbars();
 }
 
 function activateView(view) {
@@ -419,9 +644,9 @@ function openChangePasswordDrawer() {
     <p class="eyebrow">账号安全</p><h2>修改密码</h2>
     <form class="form-card" id="change-password-form">
       <label>当前密码<input type="password" name="old_password" autocomplete="current-password" required></label>
-      <label>新密码<input type="password" name="new_password" autocomplete="new-password" minlength="8" required></label>
-      <label>确认新密码<input type="password" name="confirm_password" autocomplete="new-password" minlength="8" required></label>
-      <p class="hint">新密码至少8位，不能包含空格。</p>
+      <label>新密码<input type="password" name="new_password" autocomplete="new-password" minlength="12" required></label>
+      <label>确认新密码<input type="password" name="confirm_password" autocomplete="new-password" minlength="12" required></label>
+      <p class="hint">新密码至少12位，不能包含空格。</p>
       <button>保存新密码</button>
     </form></div>`;
   const close = () => overlay.remove();
@@ -831,7 +1056,7 @@ async function loadFaultCodeAdmin() {
         <td><small>${escapeHtml(code.suggested_action || '—')}</small></td>
         <td>${code.work_order_count || 0} 单</td>
         <td>${code.status === 'ACTIVE' ? '<span class="status">启用</span>' : '<span class="status muted">已停用</span>'}</td>
-        <td><button class="secondary small" onclick="editFaultCode(${code.id})">编辑</button>${code.work_order_count ? '' : ` <button class="danger small" onclick="removeFaultCode(${code.id})">删除</button>`}</td>
+        <td><button class="secondary small" data-action="edit-fault-code" data-id="${code.id}">编辑</button>${code.work_order_count ? '' : ` <button class="danger small" data-action="remove-fault-code" data-id="${code.id}">删除</button>`}</td>
       </tr>`).join('')}
     </tbody></table></div></div>`).join('') : '<div class="card"><div class="empty">还没有故障代码，报修功能需要至少一条</div></div>';
   return data;
@@ -901,7 +1126,7 @@ async function loadPatrols() {
       <p>${escapeHtml(item.findings)}</p>
       ${attachmentStrip(item.attachments)}
       <div class="stack-meta"><span>${escapeHtml(item.line_name || '')} ${escapeHtml(item.process_name || '')}</span><span>${escapeHtml(item.patroller)}</span><span>${formatTime(item.patrolled_at)}</span></div>
-      ${!item.work_order_id ? `<div class="stack-actions"><button class="small" onclick="openPatrolToWorkOrder(${item.id})">转维修工单</button></div>` : ''}
+      ${!item.work_order_id ? `<div class="stack-actions"><button class="small" data-action="patrol-to-work-order" data-id="${item.id}">转维修工单</button></div>` : ''}
     </article>`).join('') : '<div class="empty">还没有巡检记录</div>';
 }
 
@@ -966,7 +1191,7 @@ async function loadMembers() {
       <td><span class="level-badge level-${item.level}">${escapeHtml(LEVEL_NAMES[item.level] || item.level)}</span></td>
       <td>${item.status === 'ACTIVE' ? '<span class="status">启用</span>' : '<span class="status muted">已停用</span>'}${item.must_change_password ? '<br><small class="status pending">待改密</small>' : ''}</td>
       <td>${item.last_seen_at ? formatTime(item.last_seen_at) : '<span class="status muted">从未登录</span>'}</td>
-      <td><button class="secondary small" onclick="editMember(${item.id})">编辑</button> <button class="secondary small" onclick="resetMemberPassword(${item.id})">重置密码</button></td>
+      <td><button class="secondary small" data-action="edit-member" data-id="${item.id}">编辑</button> <button class="secondary small" data-action="reset-member-password" data-id="${item.id}">重置密码</button></td>
     </tr>`).join('') : '<tr><td colspan="6" class="empty">尚无成员</td></tr>';
 }
 
@@ -1082,8 +1307,8 @@ function refreshEquipmentPicker(key) {
   const lineId = Number(parts.line.value || 0);
 
   // 车间下拉：始终是全部车间（它是最外层筛选器，自己不该被筛）
-  const workshops = state.organization?.workshops || [];
-  const lines = state.organization?.lines || [];
+  const workshops = state.activeOrganization?.workshops || [];
+  const lines = state.activeOrganization?.lines || [];
   fillSelect(parts.workshop, '全部车间', workshops.map((item) => [item.id, item.name]), workshopId);
   // 产线下拉跟着车间收窄
   const visibleLines = workshopId ? lines.filter((item) => item.workshop_id === workshopId) : lines;
@@ -1092,7 +1317,9 @@ function refreshEquipmentPicker(key) {
 
   // 设备下拉：搜索和分级二者取一——两个一起用很容易交出空集，人会以为坏了。
   // 所以打字时忽略车间/产线（下面的事件里会把那两个下拉清空）。
+  const activeLineIds = new Set(lines.map((item) => item.id));
   const filtered = state.equipment.filter((item) => {
+    if (item.line_id && !activeLineIds.has(item.line_id)) return false;
     if (keyword) return matchesEquipmentSearch(item, keyword);
     if (lineId) return item.line_id === lineId;
     if (workshopId) return item.workshop_id === workshopId;
@@ -1164,7 +1391,7 @@ function setEquipmentPicker(key, { equipmentId = null, lineId = null } = {}) {
   if (parts.search) parts.search.value = '';
   const item = equipmentId ? state.equipment.find((x) => x.id === Number(equipmentId)) : null;
   const targetLine = item?.line_id || (lineId ? Number(lineId) : null);
-  const line = (state.organization?.lines || []).find((x) => x.id === targetLine);
+  const line = (state.activeOrganization?.lines || []).find((x) => x.id === targetLine);
   parts.workshop.value = line ? String(line.workshop_id) : '';
   parts.line.value = line ? String(line.id) : '';
   refreshEquipmentPicker(key);
@@ -1193,6 +1420,15 @@ async function loadMeta() {
   workOrderStages = meta.work_order_stages || [];
   postArrivalStatuses = meta.post_arrival_statuses || [];
   if (Array.isArray(meta.withdrawable_statuses)) WITHDRAWABLE.splice(0, WITHDRAWABLE.length, ...meta.withdrawable_statuses);
+  const legal = meta.legal || {};
+  document.querySelector('#legal-company').textContent = legal.company_name || '优胜美';
+  document.querySelector('#legal-contact').textContent = legal.contact || '';
+  document.querySelector('#legal-icp').textContent = legal.icp_record || '';
+  document.querySelector('#legal-security').textContent = legal.public_security_record || '';
+  document.querySelector('#legal-app-record').textContent = legal.app_record ? `APP备案：${legal.app_record}` : '';
+  const privacy = document.querySelector('#legal-privacy');
+  privacy.hidden = !legal.privacy_url;
+  if (legal.privacy_url) privacy.href = legal.privacy_url;
 }
 
 async function loadDashboard() {
@@ -1206,6 +1442,8 @@ async function loadDashboard() {
     // 近30天已完成工单的两段平均时长。还没有数据时显示"—"，不显示 0。
     ['平均响应', data.avgResponseMinutes == null ? '—' : formatDuration(data.avgResponseMinutes), '报修到技术员到场'],
     ['平均维修', data.avgRepairMinutes == null ? '—' : formatDuration(data.avgRepairMinutes), '到场到结单'],
+    ['逾期点检', data.overdueInspectionTasks, '到期仍未执行'],
+    ['逾期保养', data.overdueMaintenanceTasks, '到期仍未执行'],
   ];
   document.querySelector('#metrics').innerHTML = metrics.map(([name, value, note]) =>
     `<article class="metric card"><span></span><strong>${value}</strong><small>${name} · ${note}</small></article>`).join('');
@@ -1213,7 +1451,25 @@ async function loadDashboard() {
 
 async function loadOrganization() {
   state.organization = await api('/api/organization');
-  const o = state.organization;
+  const source = state.organization;
+  const factoryIds = new Set(source.factories.filter((item) =>
+    item.status === 'ACTIVE').map((item) => item.id));
+  const workshops = source.workshops.filter((item) =>
+    item.status === 'ACTIVE' && factoryIds.has(item.factory_id));
+  const workshopIds = new Set(workshops.map((item) => item.id));
+  const lines = source.lines.filter((item) =>
+    item.status === 'ACTIVE' && workshopIds.has(item.workshop_id));
+  const lineIds = new Set(lines.map((item) => item.id));
+  const processes = source.processes.filter((item) =>
+    item.status === 'ACTIVE' && lineIds.has(item.line_id));
+  const processIds = new Set(processes.map((item) => item.id));
+  const positions = source.positions.filter((item) =>
+    item.status === 'ACTIVE' && processIds.has(item.process_id));
+  state.activeOrganization = {
+    factories: source.factories.filter((item) => factoryIds.has(item.id)),
+    workshops, lines, processes, positions,
+  };
+  const o = state.activeOrganization;
   replaceOptions('#repair-process', optionList(o.processes, 'id', (x) => `${x.line_name} / ${x.name}`, true));
   replaceOptions('#change-position', optionList(o.positions, 'id', (x) => `${x.line_name} / ${x.process_name} / ${x.name}`, true));
   // 设备选择器的车间/产线两级来自这里，设备来自 loadEquipment()。
@@ -1248,7 +1504,7 @@ function treeNode({ type, id, icon, name, code, note = '', badge = '', actions =
   // 新增、编辑、删除结构和装设备都是管理员的操作；alwaysActions（如"档案"）不分级别都能看。
   const nodeActions = `${alwaysActions}${canManage() ? actions : ''}`;
   return `<details class="tree-node ${leaf ? 'leaf' : ''} ${type === 'equipment' ? 'equipment-node' : ''} ${highlight ? 'highlight' : ''} ${alert ? 'alert' : ''}" data-tree-key="${key}" ${open ? 'open' : ''}>
-    <summary><span class="node-icon">${icon}</span><span class="node-main"><strong>${escapeHtml(name)}</strong>${code ? `<span class="node-code">${escapeHtml(code)}</span>` : ''}${badge}${note ? `<span class="node-note">${escapeHtml(note)}</span>` : ''}</span>${nodeActions ? `<span class="node-actions">${nodeActions}</span>` : ''}</summary>
+    <summary><span class="node-icon">${icon}</span><span class="node-main"><span class="node-title-row"><strong>${escapeHtml(name)}</strong>${badge}</span>${code ? `<span class="node-code">${escapeHtml(code)}</span>` : ''}${note ? `<span class="node-note">${escapeHtml(note)}</span>` : ''}</span>${nodeActions ? `<span class="node-actions"><button type="button" class="node-action-trigger" data-open-node-actions aria-haspopup="dialog">操作</button><span class="node-action-list">${nodeActions}</span></span>` : ''}</summary>
     ${leaf ? '' : `<div class="tree-children">${children || '<div class="empty-branch">暂无下级数据</div>'}</div>`}
   </details>`;
 }
@@ -1267,25 +1523,28 @@ function renderOrganizationTree(focusKey = '') {
   }
   const html = state.organizationTree.map((factory) => treeNode({
     type: 'factory', id: factory.id, icon: '厂', name: factory.name, code: factory.code,
-    actions: `<button onclick="event.preventDefault();event.stopPropagation();openStructureDrawer('workshop', ${factory.id})">＋车间</button>`,
+    actions: `<button data-action="structure-edit" data-kind="workshop" data-parent-id="${factory.id}">＋车间</button>`,
     highlight: focusKey === treeKey('factory', factory.id),
     children: factory.workshops.map((workshop) => treeNode({
       type: 'workshop', id: workshop.id, icon: '间', name: workshop.name, code: workshop.code,
-      actions: `<button onclick="event.preventDefault();event.stopPropagation();openStructureDrawer('workshop', ${factory.id}, ${workshop.id})">编辑</button><button onclick="event.preventDefault();event.stopPropagation();openStructureDrawer('line', ${workshop.id})">＋产线</button><button class="danger" onclick="event.preventDefault();event.stopPropagation();openDeleteStructure('workshop', ${workshop.id})">删除</button>`,
+      badge: workshop.status === 'DISABLED' ? statusBadge('DISABLED') : '',
+      actions: `<button data-action="structure-edit" data-kind="workshop" data-parent-id="${factory.id}" data-id="${workshop.id}">编辑</button><button data-action="structure-edit" data-kind="line" data-parent-id="${workshop.id}">＋产线</button><button class="danger" data-action="structure-delete" data-kind="workshop" data-id="${workshop.id}">删除</button>`,
       highlight: focusKey === treeKey('workshop', workshop.id),
       children: workshop.lines.map((line) => {
         lineCount += 1;
         return treeNode({
           type: 'line', id: line.id, icon: '线', name: line.name, code: line.code,
+          badge: line.status === 'DISABLED' ? statusBadge('DISABLED') : '',
           note: `${line.processes.length}个工序${line.supervisor ? ` · 主管：${line.supervisor}` : ''}`,
-          actions: `<button onclick="event.preventDefault();event.stopPropagation();openStructureDrawer('line', ${workshop.id}, ${line.id})">编辑</button><button onclick="event.preventDefault();event.stopPropagation();openStructureDrawer('process', ${line.id})">＋工序</button><button class="danger" onclick="event.preventDefault();event.stopPropagation();openDeleteStructure('line', ${line.id})">删除</button>`,
+          actions: `<button data-action="structure-edit" data-kind="line" data-parent-id="${workshop.id}" data-id="${line.id}">编辑</button><button data-action="structure-edit" data-kind="process" data-parent-id="${line.id}">＋工序</button><button class="danger" data-action="structure-delete" data-kind="line" data-id="${line.id}">删除</button>`,
           highlight: focusKey === treeKey('line', line.id),
           children: line.processes.map((process) => {
             processCount += 1;
             return treeNode({
               type: 'process', id: process.id, icon: '序', name: process.name, code: process.code,
+              badge: process.status === 'DISABLED' ? statusBadge('DISABLED') : '',
               note: `${process.positions.length}个机位 · 顺序${process.sequence_no}`,
-              actions: `<button onclick="event.preventDefault();event.stopPropagation();openStructureDrawer('process', ${line.id}, ${process.id})">编辑</button><button onclick="event.preventDefault();event.stopPropagation();openStructureDrawer('position', ${process.id})">＋机位</button><button class="danger" onclick="event.preventDefault();event.stopPropagation();openDeleteStructure('process', ${process.id})">删除</button>`,
+              actions: `<button data-action="structure-edit" data-kind="process" data-parent-id="${line.id}" data-id="${process.id}">编辑</button><button data-action="structure-edit" data-kind="position" data-parent-id="${process.id}">＋机位</button><button class="danger" data-action="structure-delete" data-kind="process" data-id="${process.id}">删除</button>`,
               highlight: focusKey === treeKey('process', process.id),
               children: process.positions.map((position) => {
                 positionCount += 1;
@@ -1294,17 +1553,17 @@ function renderOrganizationTree(focusKey = '') {
                   type: 'equipment', id: position.equipment.id, icon: '机', name: position.equipment.standard_name,
                   code: position.equipment.code, badge: statusBadge(position.equipment.status),
                   note: position.equipment.alias || position.equipment.category, leaf: true,
-                  alwaysActions: `<button onclick="event.preventDefault();event.stopPropagation();openEquipmentProfile(${position.equipment.id})">档案</button>`,
+                  alwaysActions: `<button data-action="equipment-profile" data-id="${position.equipment.id}">档案</button>`,
                   highlight: focusKey === treeKey('equipment', position.equipment.id),
                   alert: underRepair(position.equipment.status),
                 }) : '<div class="empty-branch">当前未安装设备</div>';
                 return treeNode({
                   type: 'position', id: position.id, icon: '位', name: position.name, code: position.code,
                   // 机位默认收起，把设备的维修状态提到机位这一层，不展开也能看见。
-                  badge: position.equipment && underRepair(position.equipment.status) ? statusBadge(position.equipment.status) : '',
+                  badge: `${position.status === 'DISABLED' ? statusBadge('DISABLED') : ''}${position.equipment && underRepair(position.equipment.status) ? statusBadge(position.equipment.status) : ''}`,
                   alert: Boolean(position.equipment && underRepair(position.equipment.status)),
                   note: `${position.critical ? '关键机位 · ' : ''}${position.equipment ? `已安装${position.equipment.code}` : '空机位'}`,
-                  actions: `<button onclick="event.preventDefault();event.stopPropagation();openStructureDrawer('position', ${process.id}, ${position.id})">编辑</button><button onclick="event.preventDefault();event.stopPropagation();prepareInstall(${position.id})">${position.equipment ? '变动' : '装设备'}</button><button class="danger" onclick="event.preventDefault();event.stopPropagation();openDeleteStructure('position', ${position.id})">删除</button>`,
+                  actions: `<button data-action="structure-edit" data-kind="position" data-parent-id="${process.id}" data-id="${position.id}">编辑</button><button data-action="prepare-install" data-id="${position.id}">${position.equipment ? '变动' : '装设备'}</button><button class="danger" data-action="structure-delete" data-kind="position" data-id="${position.id}">删除</button>`,
                   highlight: focusKey === treeKey('position', position.id), children: equipmentChild,
                 });
               }).join(''),
@@ -1357,7 +1616,7 @@ async function loadEquipment(search = '') {
     <td>${item.type_code ? `${escapeHtml(item.type_code)}${item.key_spec ? `<br><small>${escapeHtml(item.key_spec)}</small>` : ''}` : '<span class="status pending">旧编码</span>'}</td>
     <td>${escapeHtml(item.category)}</td><td>${item.position_name ? `${escapeHtml(item.line_name)} / ${escapeHtml(item.position_name)}` : '<span class="status muted">未安装</span>'}</td>
     <td>${item.verified ? '<span class="status">已核实</span>' : '<span class="status pending">待核实</span>'}</td>
-    <td><button class="secondary small" onclick="openEquipmentProfile(${item.id})">档案</button> <button class="secondary small" onclick="showLabel(${item.id})">铭牌</button></td></tr>`).join('') : '<tr><td colspan="8" class="empty">尚无设备</td></tr>';
+    <td><button class="secondary small" data-action="equipment-profile" data-id="${item.id}">档案</button> <button class="secondary small" data-action="show-label" data-id="${item.id}">铭牌</button></td></tr>`).join('') : '<tr><td colspan="8" class="empty">尚无设备</td></tr>';
   for (const key of Object.keys(EQUIPMENT_PICKERS)) refreshEquipmentPicker(key);
   syncRepairProcessField();
 }
@@ -1368,7 +1627,7 @@ async function loadChanges() {
     <article class="stack-item"><div class="stack-title"><strong>${escapeHtml(item.change_no)} · ${labels[item.action]}</strong><span class="status ${item.status === 'PENDING' ? 'pending' : item.status === 'REJECTED' ? 'danger' : ''}">${labels[item.status] || item.status}</span></div>
     <div class="stack-meta"><span>${escapeHtml(item.equipment_code)} ${escapeHtml(item.equipment_name)}</span><span>${escapeHtml(item.from_position_name || '未安装')} → ${escapeHtml(item.to_position_name || '移除')}</span><span>${formatTime(item.effective_at)}</span><span>提交：${escapeHtml(item.submitted_by)}</span></div>
     <p>${escapeHtml(item.reason)}</p>${item.replacement_equipment_code ? `<p class="hint">替换为：${escapeHtml(item.replacement_equipment_code)} ${escapeHtml(item.replacement_equipment_name)}</p>` : ''}
-    ${item.status === 'PENDING' ? `<div class="stack-actions"><button class="small" onclick="reviewChange(${item.id}, 'APPROVED')">确认生效</button><button class="small danger" onclick="reviewChange(${item.id}, 'REJECTED')">驳回</button></div>` : ''}
+    ${item.status === 'PENDING' ? `<div class="stack-actions"><button class="small" data-action="review-change" data-id="${item.id}" data-decision="APPROVED">确认生效</button><button class="small danger" data-action="review-change" data-id="${item.id}" data-decision="REJECTED">驳回</button></div>` : ''}
     </article>`).join('') : '<div class="empty">暂无设备变动申请</div>';
 }
 
@@ -1390,12 +1649,12 @@ function workOrderCard(item) {
   const statusClass = item.status === 'SUBMITTED' ? 'pending'
     : item.status === 'CANCELLED' ? 'danger' : item.status === 'COMPLETED' ? '' : 'muted';
   const actions = [
-    claimable ? `<button class="small" onclick="event.stopPropagation();claimWorkOrder(${item.id})">我接这单</button>` : '',
-    canWithdraw ? `<button class="secondary small" onclick="event.stopPropagation();withdrawWorkOrder(${item.id})">撤回</button>` : '',
-    canReview ? `<button class="small" onclick="event.stopPropagation();reviewWorkOrder(${item.id})">${item.has_review ? '修改评价' : '评价'}</button>` : '',
-    canReopen ? `<button class="secondary small" onclick="event.stopPropagation();reopenWorkOrder(${item.id})">重新报修</button>` : '',
+    claimable ? `<button class="small" data-action="claim-work-order" data-id="${item.id}">我接这单</button>` : '',
+    canWithdraw ? `<button class="secondary small" data-action="withdraw-work-order" data-id="${item.id}">撤回</button>` : '',
+    canReview ? `<button class="small" data-action="review-work-order" data-id="${item.id}">${item.has_review ? '修改评价' : '评价'}</button>` : '',
+    canReopen ? `<button class="secondary small" data-action="reopen-work-order" data-id="${item.id}">重新报修</button>` : '',
   ].filter(Boolean).join('');
-  return `<article class="stack-item ${item.is_downtime ? 'downtime' : ''}" onclick="openWorkOrder(${item.id})">
+  return `<article class="stack-item ${item.is_downtime ? 'downtime' : ''}" data-action="open-work-order" data-id="${item.id}">
     <div class="stack-title"><strong>${escapeHtml(item.work_order_no)}</strong><span class="status ${statusClass}">${labels[item.status] || item.status}</span>${
       item.status === 'COMPLETED' && isMine && !item.has_review ? '<span class="status pending">待评价</span>' : ''}</div>
     <div><strong>${escapeHtml(item.fault_symptom)}</strong>${item.is_downtime ? '<span class="status danger">停机</span>' : ''}${item.urgency && item.urgency !== 'NORMAL' ? `<span class="status pending">${escapeHtml(labels[item.urgency] || item.urgency)}</span>` : ''}${
@@ -1587,17 +1846,19 @@ function renderWorkOrderDetail() {
   // ── 开始维修之后才解锁：没动手就没有诊断，也不会用掉零件 ──
   const workingBlocks = !working ? '' : `
     <section class="detail-block"><h3>诊断与维修记录</h3>${canOperate
-      ? `<form class="inline-form" id="repair-detail-form"><label class="wide">诊断<textarea name="diagnosis">${escapeHtml(w.diagnosis || '')}</textarea></label><label class="wide">根本原因<textarea name="root_cause">${escapeHtml(w.root_cause || '')}</textarea></label><label class="wide">维修方法<textarea name="repair_action">${escapeHtml(w.repair_action || '')}</textarea></label><label>停机分钟<input type="number" min="0" name="downtime_minutes" value="${escapeHtml(w.downtime_minutes ?? '')}"></label><label>试运行结果<input name="trial_result" value="${escapeHtml(w.trial_result || '')}"></label><button>保存维修记录</button></form>`
+      ? `<form class="inline-form" id="repair-detail-form"><label class="wide">诊断（结单前必填）<textarea name="diagnosis">${escapeHtml(w.diagnosis || '')}</textarea></label><label class="wide">根本原因<textarea name="root_cause">${escapeHtml(w.root_cause || '')}</textarea></label><label class="wide">维修方法（结单前必填）<textarea name="repair_action">${escapeHtml(w.repair_action || '')}</textarea></label><label>人工修正停机分钟<input type="number" min="0" name="downtime_minutes" value="${w.downtime_is_override ? escapeHtml(w.downtime_minutes ?? '') : ''}" placeholder="留空则结单时自动计算"></label><label>停机时长修正原因<input name="downtime_override_reason" value="${escapeHtml(w.downtime_override_reason || '')}" placeholder="人工填写分钟时必填"></label><label>试运行结果<input name="trial_result" value="${escapeHtml(w.trial_result || '')}"></label><button>保存维修记录</button></form>`
       : '<p class="hint">只有接单人能填。</p>'}</section>
     <section class="detail-block"><h3>使用零件</h3>${canOperate
-      ? `<form class="inline-form" id="part-form"><label>零件名称<input name="part_name" required></label><label>型号规格<input name="specification"></label><label>数量<input type="number" step="0.01" min="0.01" name="quantity" value="1" required></label><label>单位<input name="unit" value="个" required></label><label>来源<input name="source"></label><label>旧件处理<input name="old_part_disposition"></label><button>添加零件</button></form>` : ''}
+      ? `<form class="inline-form" id="part-form"><label>零件名称<input name="part_name" required></label><label>型号规格<input name="specification"></label><label>零件编码<input name="part_code"></label><label>数量<input type="number" step="0.01" min="0.01" name="quantity" value="1" required></label><label>单位<input name="unit" value="个" required></label><label>零件状态<select name="part_condition"><option value="NEW">新件</option><option value="REUSED">复用件</option><option value="REPAIRED">修复件</option></select></label><label>单价<input type="number" step="0.01" min="0" name="unit_cost"></label><label>来源<input name="source"></label><label>旧件处理<input name="old_part_disposition"></label><button>添加零件</button></form>` : ''}
       <div class="table-wrap"><table><thead><tr><th>零件</th><th>规格</th><th>数量</th><th>来源</th><th>记录人</th></tr></thead><tbody>${detail.parts.length ? detail.parts.map((p) => `<tr><td>${escapeHtml(p.part_name)}</td><td>${escapeHtml(p.specification || '—')}</td><td>${p.quantity} ${escapeHtml(p.unit)}</td><td>${escapeHtml(p.source || '—')}</td><td>${escapeHtml(p.recorded_by)}</td></tr>`).join('') : '<tr><td colspan="5" class="empty">未记录零件</td></tr>'}</tbody></table></div></section>`;
 
-  // ── 结单前检查：三道硬校验各一行，缺哪项一眼看到，按钮就在下面 ──
-  // 判定条件必须和服务端 transitionWorkOrder 里那三个 if 保持一致。
+  // ── 结单前检查：硬校验各一行，缺哪项一眼看到，按钮就在下面 ──
+  // 判定条件必须和服务端 transitionWorkOrder 保持一致。
   // 这里只是把它们提前显示出来，把关仍然在服务端。
   const checks = [
     { ok: Boolean(w.trial_result), name: '试运行结果', value: w.trial_result, fix: '在上面「诊断与维修记录」里填' },
+    { ok: Boolean(w.diagnosis), name: '故障诊断', value: w.diagnosis, fix: '在上面「诊断与维修记录」里填' },
+    { ok: Boolean(w.repair_action), name: '维修方法', value: w.repair_action, fix: '在上面「诊断与维修记录」里填' },
     { ok: Boolean(w.final_equipment_id), name: '故障设备归属', value: w.final_equipment_code, fix: '在上面「修正故障设备」里指明' },
     { ok: Boolean(w.fault_code_id), name: '故障分类', value: w.fault_symptom, fix: '在上面「确认故障分类」里选' },
   ];
@@ -1665,7 +1926,16 @@ function bindWorkOrderForms(id) {
   bindDetailFaultCascade();
   bind('#classify-form', async (event) => { event.preventDefault(); await mutateWorkOrder(`/api/work-orders/${id}/fault-code`, 'POST', formObject(event.currentTarget), '故障分类已确认'); });
   bind('#repair-detail-form', async (event) => { event.preventDefault(); await mutateWorkOrder(`/api/work-orders/${id}/repair-detail`, 'PUT', formObject(event.currentTarget), '维修记录已保存'); });
-  bind('#part-form', async (event) => { event.preventDefault(); await mutateWorkOrder(`/api/work-orders/${id}/parts`, 'POST', formObject(event.currentTarget), '零件使用已记录'); });
+  bind('#part-form', async (event) => {
+    event.preventDefault();
+    await mutateWorkOrder(
+      `/api/work-orders/${id}/parts`,
+      'POST',
+      formObject(event.currentTarget),
+      '零件使用已记录',
+      { idempotent: true },
+    );
+  });
 }
 
 // 工单详情里那份三级级联是独立的一套控件（报修表单那套在另一个页面上，
@@ -1703,10 +1973,12 @@ function bindDetailFaultCascade() {
 // 表单提交这一路不需要，失败信息已经用 flash 给用户看过了——不吞掉的话
 // 每次预期内的校验失败都会变成一条未处理的 Promise 拒绝，把控制台刷满，
 // 也让"监听 Runtime.exceptionThrown 找真 bug"这个验证手段失去信噪比。
-async function mutateWorkOrder(path, method, body, message) {
+async function mutateWorkOrder(path, method, body, message, options = {}) {
   let updated;
   try {
-    updated = await guarded(() => api(path, { method, body: JSON.stringify(body) }), message);
+    updated = await guarded(() => api(path, {
+      method, body: JSON.stringify(body), idempotent: Boolean(options.idempotent),
+    }), message);
   } catch { return false; }
   state.selectedWorkOrder = updated;
   renderWorkOrderDetail();
@@ -1717,6 +1989,263 @@ async function mutateWorkOrder(path, method, body, message) {
 async function loadLogs() {
   const logs = await api('/api/audit-logs?limit=300');
   document.querySelector('#audit-body').innerHTML = logs.length ? logs.map((log) => `<tr><td>${formatTime(log.created_at)}</td><td>${escapeHtml(log.actor)}</td><td>${escapeHtml(log.entity_type)}</td><td>${escapeHtml(log.action)}</td><td>#${log.entity_id}</td></tr>`).join('') : '<tr><td colspan="5" class="empty">暂无日志</td></tr>';
+}
+
+function parseTaskItems(text) {
+  return String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const [itemName, itemType = 'CHECK', standardText = '', unit = '', min = '', max = '', photo = ''] =
+      line.split(/[|｜]/).map((part) => part.trim());
+    return {
+      item_name: itemName,
+      item_type: itemType.toUpperCase(),
+      standard_text: standardText,
+      unit,
+      min_value: min,
+      max_value: max,
+      requires_photo_on_fail: /拍照|photo|是|yes/i.test(photo),
+    };
+  });
+}
+
+function taskTargetOptions(type) {
+  if (type === 'PROCESS') {
+    return (state.activeOrganization?.processes || []).map((item) =>
+      `<option value="${item.id}">${escapeHtml(`${item.line_name} / ${item.name}`)}</option>`).join('');
+  }
+  return state.equipment.map((item) =>
+    `<option value="${item.id}">${escapeHtml(`${item.code} · ${item.alias || item.standard_name}`)}</option>`).join('');
+}
+
+function taskStatusMeta(task) {
+  if (task.status === 'PENDING' && new Date(task.due_at) < new Date()) return ['已逾期', 'danger'];
+  return {
+    PENDING: ['待执行', 'pending'],
+    COMPLETED: ['已完成', ''],
+    ABNORMAL: ['有异常', 'danger'],
+    CONVERTED: ['已转维修', 'pending'],
+    CANCELLED: ['已取消', 'muted'],
+  }[task.status] || [task.status, 'muted'];
+}
+
+function renderTaskModule(kind) {
+  const root = document.querySelector(`[data-task-kind="${kind}"]`);
+  if (!root) return;
+  const module = state.taskModules[kind];
+  root.querySelectorAll('[data-task-template-select]').forEach((select) => {
+    select.innerHTML = `<option value="">请选择</option>${module.templates
+      .filter((item) => item.status === 'ACTIVE')
+      .map((item) => `<option value="${item.id}">${escapeHtml(item.name)}${
+        item.maintenance_level ? ` · ${item.maintenance_level}级` : ''}</option>`).join('')}`;
+  });
+  root.querySelectorAll('[data-task-assignee]').forEach((select) => {
+    select.innerHTML = `<option value="">不指定，技术员可领取</option>${state.members
+      .filter((item) => item.status === 'ACTIVE' && Number(item.level) >= LEVELS.TECHNICIAN)
+      .map((item) => `<option value="${item.id}">${escapeHtml(item.display_name)} · ${LEVEL_NAMES[item.level]}</option>`).join('')}`;
+  });
+  root.querySelectorAll('[data-task-target-select]').forEach((select) => {
+    const type = select.closest('form').querySelector('[data-task-target-type]').value;
+    select.innerHTML = `<option value="">请选择</option>${taskTargetOptions(type)}`;
+  });
+  const list = root.querySelector('[data-task-list]');
+  root.querySelector('[data-task-count]').textContent = `${module.tasks.length}项`;
+  list.innerHTML = module.tasks.length ? module.tasks.map((task) => {
+    const [status, tone] = taskStatusMeta(task);
+    const target = task.target_type === 'EQUIPMENT'
+      ? `${task.equipment_code || ''} ${task.equipment_name || ''}`
+      : `${task.process_code || ''} ${task.process_name || ''}`;
+    const action = task.status === 'PENDING'
+      ? `<button class="small" data-action="execute-task" data-id="${task.id}" data-kind="${kind}">开始执行</button>`
+      : task.status === 'ABNORMAL'
+        ? `<button class="small" data-action="task-to-repair" data-id="${task.id}" data-kind="${kind}">转维修</button>
+           <button class="secondary small" data-action="close-task-abnormal" data-id="${task.id}" data-kind="${kind}">已现场解决</button>`
+        : '';
+    return `<article class="stack-item">
+      <div class="stack-title"><strong>${escapeHtml(task.template_name)}</strong><span class="status ${tone}">${status}</span></div>
+      <p>${escapeHtml(target)}${task.maintenance_level ? ` · ${task.maintenance_level}级保养` : ''}</p>
+      <p class="hint">到期：${formatTime(task.due_at)} · 执行人：${escapeHtml(task.assignee_name || '未指定')}</p>
+      ${task.summary ? `<p>${escapeHtml(task.summary)}</p>` : ''}<div class="item-actions">${action}</div>
+    </article>`;
+  }).join('') : '<div class="empty">当前没有任务。管理员启用计划后，到期任务会自动生成。</div>';
+}
+
+async function loadTaskModule(kind) {
+  const [templates, plans, tasks] = await Promise.all([
+    api(`/api/task-templates/${kind}`),
+    api(`/api/task-plans/${kind}`),
+    api(`/api/tasks/${kind}`),
+  ]);
+  state.taskModules[kind] = { templates, plans, tasks };
+  renderTaskModule(kind);
+}
+
+function bindTaskModules() {
+  document.querySelectorAll('[data-task-kind]').forEach((root) => {
+    const kind = root.dataset.taskKind;
+    root.querySelectorAll('[data-task-target-type]').forEach((select) =>
+      select.addEventListener('change', () => {
+        const target = select.closest('form').querySelector('[data-task-target-select]');
+        target.innerHTML = `<option value="">请选择</option>${taskTargetOptions(select.value)}`;
+      }));
+    const templateForm = root.querySelector('[data-task-template-form]');
+    templateForm?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const payload = formObject(form);
+      payload.items = parseTaskItems(payload.items_text);
+      delete payload.items_text;
+      await guarded(() => api(`/api/task-templates/${kind}`, {
+        method: 'POST', body: JSON.stringify(payload),
+      }), '模板已保存');
+      form.reset();
+      await loadTaskModule(kind);
+    });
+    const planForm = root.querySelector('[data-task-plan-form]');
+    planForm?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      await guarded(() => api(`/api/task-plans/${kind}`, {
+        method: 'POST', body: JSON.stringify(formObject(form)),
+      }), '计划已启用');
+      form.reset();
+      await loadTaskModule(kind);
+    });
+  });
+}
+
+async function openTaskExecution(id, kind) {
+  const task = await guarded(() => api(`/api/tasks/${id}`));
+  const overlay = document.createElement('div');
+  overlay.className = 'drawer';
+  overlay.innerHTML = `<div class="drawer-backdrop"></div><div class="drawer-panel"><button class="drawer-close">×</button>
+    <p class="eyebrow">${kind === 'inspection' ? '结构化点检' : '设备保养'}</p>
+    <h2>${escapeHtml(task.template_name)}</h2>
+    <p class="hint">每个项目都必须填写；数值超出模板范围会自动判为异常。</p>
+    <form class="form-card flush" data-task-execute-form>
+      ${task.items.map((item) => `<div class="detail-block" data-result-item="${item.id}" data-item-type="${item.item_type}">
+        <h3>${escapeHtml(item.item_name)}</h3>
+        ${item.standard_text ? `<p class="hint">标准：${escapeHtml(item.standard_text)}</p>` : ''}
+        ${item.item_type === 'NUMBER' ? `<label>测量值<input type="number" step="any" data-measured-value required> ${escapeHtml(item.unit || '')}</label>` : ''}
+        ${item.item_type === 'TEXT' ? '<label>执行记录<textarea data-text-value rows="2" required></textarea></label>' : ''}
+        <label>结果<select data-result-status><option value="PASS">正常/完成</option><option value="FAIL">异常/未完成</option><option value="NA">不适用</option></select></label>
+        <label>备注<input data-result-note placeholder="异常时请说明"></label>
+      </div>`).join('')}
+      <label>执行总结<textarea name="summary" rows="3"></textarea></label>
+      <label>异常照片<input type="file" accept="image/*" capture="environment" multiple data-task-photo></label>
+      <div data-task-photo-count class="hint"></div>
+      <button>提交执行结果</button>
+    </form></div>`;
+  const close = () => overlay.remove();
+  overlay.querySelector('.drawer-backdrop').onclick = close;
+  overlay.querySelector('.drawer-close').onclick = close;
+  const photos = [];
+  overlay.querySelector('[data-task-photo]').addEventListener('change', async (event) => {
+    const files = [...event.target.files].slice(0, MAX_PHOTOS - photos.length);
+    for (const file of files) photos.push(await compressImage(file));
+    overlay.querySelector('[data-task-photo-count]').textContent = `已选择${photos.length}张照片`;
+    event.target.value = '';
+  });
+  overlay.querySelector('[data-task-execute-form]').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const results = [...form.querySelectorAll('[data-result-item]')].map((row) => ({
+      template_item_id: Number(row.dataset.resultItem),
+      result_status: row.querySelector('[data-result-status]').value,
+      measured_value: row.querySelector('[data-measured-value]')?.value,
+      text_value: row.querySelector('[data-text-value]')?.value,
+      note: row.querySelector('[data-result-note]').value,
+    }));
+    try {
+      await guarded(() => api(`/api/tasks/${id}/execute`, {
+        method: 'POST',
+        idempotent: true,
+        body: JSON.stringify({
+          results,
+          summary: form.querySelector('[name="summary"]').value,
+          attachments: photos.map((photo) => ({
+            content_base64: photo.content_base64, name: photo.name,
+          })),
+        }),
+      }), '任务执行结果已提交');
+    } catch { return; }
+    close();
+    await Promise.all([loadTaskModule(kind), loadDashboard()]);
+  });
+  document.body.append(overlay);
+}
+
+async function convertTaskToRepair(id, kind) {
+  if (!confirm('把这项异常转成维修工单？')) return;
+  await guarded(() => api(`/api/tasks/${id}/to-work-order`, {
+    method: 'POST',
+    idempotent: true,
+    body: JSON.stringify({}),
+  }), '异常已转为维修工单');
+  await Promise.all([loadTaskModule(kind), loadWorkOrders(), loadDashboard()]);
+}
+
+async function closeTaskAbnormal(id, kind) {
+  const resolution = window.prompt('请填写现场处理结果');
+  if (!resolution?.trim()) return;
+  await guarded(() => api(`/api/tasks/${id}/close-abnormal`, {
+    method: 'POST', body: JSON.stringify({ resolution }),
+  }), '异常已闭环');
+  await Promise.all([loadTaskModule(kind), loadDashboard()]);
+}
+
+async function loadOperationalReport() {
+  const start = document.querySelector('#report-start').value;
+  const end = document.querySelector('#report-end').value;
+  const query = new URLSearchParams({ start, end }).toString();
+  const report = await api(`/api/reports/operations?${query}`);
+  document.querySelector('#export-report').href = `/api/reports/operations.xlsx?${query}`;
+  const totals = report.totals;
+  document.querySelector('#report-metrics').innerHTML = [
+    ['报修工单', totals.work_orders || 0],
+    ['完成工单', totals.completed || 0],
+    ['停机工单', totals.downtime_orders || 0],
+    ['平均响应', totals.avg_response_minutes == null ? '—' : formatDuration(Math.round(totals.avg_response_minutes))],
+    ['平均维修', totals.avg_repair_minutes == null ? '—' : formatDuration(Math.round(totals.avg_repair_minutes))],
+    ['重复报修', totals.repeat_repairs || 0],
+  ].map(([name, value]) => `<article class="metric card"><strong>${value}</strong><small>${name}</small></article>`).join('');
+  document.querySelector('#report-faults').innerHTML = report.faults.map((item) =>
+    `<tr><td>${escapeHtml(`${item.category} / ${item.part} / ${item.symptom}`)}</td><td>${item.count}</td><td>${item.downtime_minutes || 0}</td></tr>`).join('')
+    || '<tr><td colspan="3" class="empty">暂无数据</td></tr>';
+  document.querySelector('#report-equipment').innerHTML = report.equipment.map((item) =>
+    `<tr><td>${escapeHtml(`${item.code} · ${item.standard_name}`)}</td><td>${item.fault_count}</td><td>${item.downtime_minutes || 0}</td></tr>`).join('')
+    || '<tr><td colspan="3" class="empty">暂无数据</td></tr>';
+  document.querySelector('#report-tasks').innerHTML = report.tasks.map((item) =>
+    `<tr><td>${item.task_kind === 'INSPECTION' ? '点检' : '保养'}</td><td>${item.due_count}</td><td>${item.executed_count}</td><td>${item.abnormal_count}</td><td>${item.overdue_count}</td></tr>`).join('')
+    || '<tr><td colspan="5" class="empty">暂无数据</td></tr>';
+}
+
+function processLabelHtml(item) {
+  return `<div class="label-preview process-label"><small>优胜美生产工序</small>
+    <strong>${escapeHtml(item.process_code || item.code)}</strong>
+    <span>${escapeHtml(`${item.line_name} / ${item.name}`)}</span>
+    <img class="label-qr" src="/api/qr/${encodeURIComponent(item.qr_token)}/image.svg" alt="工序二维码">
+    <small>扫码查看本工序设备并报修</small></div>`;
+}
+
+async function openProcessLabelBatch() {
+  const items = await guarded(() => api('/api/qr/process-labels'));
+  const overlay = document.createElement('div');
+  overlay.className = 'drawer label-batch';
+  overlay.innerHTML = `<div class="drawer-backdrop"></div><div class="drawer-panel"><button class="drawer-close">×</button>
+    <h2>批量打印工序二维码</h2>${qrAddressNotice()}
+    <div class="no-print"><label>产线<select data-process-label-line><option value="">全部产线</option>${
+      (state.activeOrganization?.lines || []).map((line) => `<option value="${line.id}">${escapeHtml(line.name)}</option>`).join('')}</select></label>
+      <p><button data-print-process-labels>打印工序二维码</button></p></div>
+    <div class="label-sheet" data-process-label-sheet>${items.map(processLabelHtml).join('')}</div></div>`;
+  const close = () => overlay.remove();
+  overlay.querySelector('.drawer-backdrop').onclick = close;
+  overlay.querySelector('.drawer-close').onclick = close;
+  overlay.querySelector('[data-process-label-line]').addEventListener('change', (event) => {
+    const lineId = Number(event.target.value || 0);
+    overlay.querySelector('[data-process-label-sheet]').innerHTML = items
+      .filter((item) => !lineId || item.line_id === lineId).map(processLabelHtml).join('');
+  });
+  overlay.querySelector('[data-print-process-labels]').onclick = () => window.print();
+  document.body.append(overlay);
 }
 
 // 铭牌上**刻意不印车间/产线/工位**。设备调线、移机、替换之后铭牌不会变成错的——
@@ -1755,7 +2284,7 @@ function showLabel(id) {
     ${qrAddressNotice()}
     <p class="hint">铭牌不印车间和产线——设备移机之后铭牌才不会变成错的。位置扫码就看得到。</p>
     <div class="label-sheet">${labelHtml(item)}</div>
-    <p><button onclick="window.print()">打印这一张</button></p></div>`;
+    <p><button data-action="print-page">打印这一张</button></p></div>`;
   preview.querySelector('.drawer-backdrop').onclick = () => preview.remove();
   preview.querySelector('.drawer-close').onclick = () => preview.remove();
   document.body.append(preview);
@@ -1765,14 +2294,14 @@ function showLabel(id) {
 function openLabelBatch() {
   const overlay = document.createElement('div');
   overlay.className = 'drawer label-batch';
-  const lines = state.organization?.lines || [];
+  const lines = state.activeOrganization?.lines || [];
   overlay.innerHTML = `<div class="drawer-backdrop"></div><div class="drawer-panel"><button class="drawer-close">×</button>
     <h2>批量打印设备铭牌</h2>
     ${qrAddressNotice()}
     <div class="no-print">
       <div class="form-row">
         <label>车间<select id="batch-workshop"><option value="">请选择</option>${
-          (state.organization?.workshops || []).map((w) => `<option value="${w.id}">${escapeHtml(w.name)}</option>`).join('')}</select></label>
+          (state.activeOrganization?.workshops || []).map((w) => `<option value="${w.id}">${escapeHtml(w.name)}</option>`).join('')}</select></label>
         <label>产线<select id="batch-line"><option value="">先选车间</option></select></label>
       </div>
       <p class="hint" id="batch-summary">选一条产线，铭牌会按工位顺序排好。</p>
@@ -2042,7 +2571,7 @@ async function openDeleteStructure(type, id) {
   const blockers = preview.blockers.map((item) => `<li>${escapeHtml(item)}</li>`).join('');
   overlay.innerHTML = `<div class="drawer-backdrop"></div><div class="drawer-panel"><button class="drawer-close">×</button><p class="eyebrow">删除前安全检查</p><h2>${escapeHtml(preview.target.label)}：${escapeHtml(preview.target.name)}</h2><p class="hint">${escapeHtml(preview.target.code)}</p>
     <div class="delete-summary"><div><strong>${c.workshops}</strong>车间</div><div><strong>${c.lines}</strong>产线</div><div><strong>${c.processes}</strong>工序</div><div><strong>${c.positions}</strong>机位</div><div><strong>${c.work_orders_to_delete}</strong>关联工单将删除</div></div>
-    ${blockers ? `<div class="blocker-list"><strong>当前不能删除</strong><ul>${blockers}</ul><p>已经生效的设备安装和组合变动历史必须保留。</p></div>` : `<div class="detail-block"><p>该分支没有设备安装或组合变动历史，可以删除。关联维修工单及其零件、流转记录会一并删除，并保留本次分支删除审计。</p><label>输入节点名称确认<input id="delete-confirm-name" placeholder="${escapeHtml(preview.target.name)}"></label><button class="danger" id="confirm-structure-delete" disabled>确认删除整个分支</button></div>`}`;
+    ${blockers ? `<div class="blocker-list"><strong>当前不能删除</strong><ul>${blockers}</ul><p>设备安装、变动、维修和巡检历史必须永久保留；不用的结构请停用，不得级联删除业务记录。</p></div>` : `<div class="detail-block"><p>该分支从未产生设备安装、变动、维修或巡检记录，可以安全删除，并保留本次分支删除审计。</p><label>输入节点名称确认<input id="delete-confirm-name" placeholder="${escapeHtml(preview.target.name)}"></label><button class="danger" id="confirm-structure-delete" disabled>确认删除整个空分支</button></div>`}`;
   const close = () => overlay.remove();
   overlay.querySelector('.drawer-backdrop').onclick = close;
   overlay.querySelector('.drawer-close').onclick = close;
@@ -2078,7 +2607,9 @@ function openStructureDrawer(kind, parentId, id = null) {
   overlay.innerHTML = `<div class="drawer-backdrop"></div><div class="drawer-panel"><button class="drawer-close">×</button><p class="eyebrow">产线组合树</p><h2>${isEdit ? '编辑' : '新增'}${titles[kind]}</h2><form class="form-card" id="structure-node-form">
     ${isEdit ? '' : `<input type="hidden" name="${parentFields[kind]}" value="${parentId}">`}
     <label>${titles[kind]}编码<input name="code" placeholder="${placeholder[kind]}" value="${escapeHtml(item?.code || '')}" ${isEdit ? 'readonly' : 'required'}></label>
-    <label>${titles[kind]}名称<input name="name" value="${escapeHtml(item?.name || '')}" required></label>${extraFields}<button>${isEdit ? '保存修改' : `创建${titles[kind]}`}</button></form></div>`;
+    <label>${titles[kind]}名称<input name="name" value="${escapeHtml(item?.name || '')}" required></label>${extraFields}<button>${isEdit ? '保存修改' : `创建${titles[kind]}`}</button></form>
+    ${isEdit ? `<div class="detail-block"><p>当前状态：${item.status === 'DISABLED' ? '已停用' : '启用中'}</p><button type="button" id="toggle-structure-status" class="${item.status === 'DISABLED' ? '' : 'danger'}">${item.status === 'DISABLED' ? `重新启用${titles[kind]}` : `停用${titles[kind]}`}</button><p class="hint">停用会保留全部业务历史；仍安装设备的机位必须先完成设备变动。</p></div>` : ''}
+    </div>`;
   const close = () => overlay.remove();
   overlay.querySelector('.drawer-backdrop').onclick = close;
   overlay.querySelector('.drawer-close').onclick = close;
@@ -2093,6 +2624,20 @@ function openStructureDrawer(kind, parentId, id = null) {
     state.expandedNodes.add(treeKey(kind, result.id));
     close();
     await refreshStructure(treeKey(kind, result.id));
+  });
+  overlay.querySelector('#toggle-structure-status')?.addEventListener('click', async (event) => {
+    const nextStatus = item.status === 'DISABLED' ? 'ACTIVE' : 'DISABLED';
+    if (nextStatus === 'DISABLED' && !confirm(`确认停用这个${titles[kind]}？历史记录会保留。`)) return;
+    event.currentTarget.disabled = true;
+    try {
+      await guarded(() => api(`/api/structure/${kind}/${id}/status`, {
+        method: 'PATCH', body: JSON.stringify({ status: nextStatus }),
+      }), `${titles[kind]}已${nextStatus === 'DISABLED' ? '停用' : '启用'}`);
+      close();
+      await refreshStructure(treeKey(kind, id));
+    } catch {
+      event.currentTarget.disabled = false;
+    }
   });
   document.body.append(overlay);
 }
@@ -2190,8 +2735,8 @@ async function handleScanToken(token) {
   const resolved = await api(`/api/qr/${encodeURIComponent(token)}`);
   const target = resolved.target_type === 'EQUIPMENT'
     ? { equipmentId: resolved.target.id, processId: resolved.target.process_id, label: `${resolved.target.code} ${resolved.target.standard_name}` }
-    // 工序码不会再印（二维码只贴单台机器），但万一有人扫到，就按它所属产线处理：
-    // 把选择器缩到这条线上的那几台设备，比只填个工序有用。
+    // 工序二维码用于产线入口和巡查点：把选择器缩到这条线上的设备，
+    // 报修人可以直接选择实际故障设备。
     : { equipmentId: null, processId: resolved.target.id, lineId: resolved.target.line_id,
         label: `${resolved.target.line_name} / ${resolved.target.name}` };
 
@@ -2300,6 +2845,9 @@ document.querySelectorAll('.nav-item').forEach((button) => button.addEventListen
   if (button.dataset.view === 'members') await guarded(loadMembers);
   if (button.dataset.view === 'repairs') await guarded(loadWorkOrders);
   if (button.dataset.view === 'patrol') await guarded(loadPatrols);
+  if (button.dataset.view === 'inspection') await guarded(() => loadTaskModule('inspection'));
+  if (button.dataset.view === 'maintenance') await guarded(() => loadTaskModule('maintenance'));
+  if (button.dataset.view === 'reports') await guarded(loadOperationalReport);
   if (button.dataset.view === 'fault-codes') await guarded(loadFaultCodeAdmin);
   if (button.dataset.view === 'reviews') await guarded(loadReviewAdmin);
 }));
@@ -2307,6 +2855,9 @@ document.querySelectorAll('.nav-item').forEach((button) => button.addEventListen
 const refreshHandlers = {
   logs: loadLogs, members: loadMembers, repairs: loadWorkOrders, reviews: loadReviewAdmin,
   patrol: loadPatrols, 'fault-codes': loadFaultCodeAdmin, dashboard: loadDashboard,
+  inspection: () => loadTaskModule('inspection'),
+  maintenance: () => loadTaskModule('maintenance'),
+  reports: loadOperationalReport,
 };
 document.querySelectorAll('[data-refresh]').forEach((button) =>
   button.addEventListener('click', () => guarded(refreshHandlers[button.dataset.refresh] || loadDashboard)));
@@ -2385,7 +2936,9 @@ document.querySelector('#repair-form').addEventListener('submit', async (event) 
   // 让"监听 Runtime.exceptionThrown 找真 bug"这个验证手段失去信噪比。
   // 失败时故意不走下面的 reset/clearPhotos——已经填的内容和拍好的照片要留着。
   try {
-    await guarded(() => api('/api/work-orders', { method: 'POST', body: JSON.stringify(payload) }), '报修已提交，技术员会尽快处理');
+    await guarded(() => api('/api/work-orders', {
+      method: 'POST', body: JSON.stringify(payload), idempotent: true,
+    }), '报修已提交，技术员会尽快处理');
   } catch { return; }
   form.reset();
   clearPhotos('repair');
@@ -2419,7 +2972,9 @@ document.querySelector('#patrol-form').addEventListener('submit', async (event) 
   event.preventDefault();
   const form = event.currentTarget;
   const payload = { ...formObject(form), attachments: takePhotos('patrol') };
-  await guarded(() => api('/api/patrols', { method: 'POST', body: JSON.stringify(payload) }), '巡检记录已提交');
+  await guarded(() => api('/api/patrols', {
+    method: 'POST', body: JSON.stringify(payload), idempotent: true,
+  }), '巡检记录已提交');
   form.reset();
   clearPhotos('patrol');
   refreshEquipmentPicker('patrol');
@@ -2431,6 +2986,9 @@ document.querySelectorAll('[data-quick-fill]').forEach((button) => button.addEve
   box.focus();
 }));
 document.querySelector('#add-fault-code').addEventListener('click', () => openFaultCodeDrawer());
+document.querySelector('#print-process-labels').addEventListener('click', openProcessLabelBatch);
+document.querySelector('#load-report').addEventListener('click', () => guarded(loadOperationalReport));
+bindTaskModules();
 
 // 注意：event.currentTarget 在第一个await之后就会变成null，
 // 凡是await之后还要用表单的，都必须先同步存下引用。
@@ -2478,8 +3036,73 @@ document.querySelector('#repair-form').querySelector('h2').addEventListener('cli
 document.querySelector('#cancel-first-password').addEventListener('click', logout);
 document.querySelector('#logout').addEventListener('click', logout);
 document.querySelector('#native-scan-button').addEventListener('click', startNativeScan);
+document.querySelector('#mobile-more-button').addEventListener('click', openMobileHeaderActions);
+document.querySelectorAll('[data-close-mobile-actions]').forEach((node) =>
+  node.addEventListener('click', () => closeMobileActionSheet()));
+document.querySelector('#server-settings-button').addEventListener('click', openServerSettings);
+document.querySelector('#server-settings-form').addEventListener('submit', saveServerSettings);
+document.querySelector('#test-server-connection').addEventListener('click', testServerConnection);
+document.querySelector('#reset-server-url').addEventListener('click', resetServerSettings);
+document.querySelectorAll('[data-close-server-settings]').forEach((node) =>
+  node.addEventListener('click', closeServerSettings));
 document.querySelector('#open-change-password').addEventListener('click', openChangePasswordDrawer);
 document.querySelector('#add-member').addEventListener('click', () => openMemberDrawer());
+
+// 严格 CSP 不允许 HTML 内联 onclick。动态列表统一走数据动作委托，既保留安全头，
+// 也避免每次重绘后重新绑定几十个按钮。
+document.addEventListener('click', (event) => {
+  const nodeMenu = event.target.closest('[data-open-node-actions]');
+  if (nodeMenu) {
+    event.preventDefault();
+    event.stopPropagation();
+    const summary = nodeMenu.closest('summary');
+    const name = summary?.querySelector('.node-main strong')?.textContent.trim() || '节点';
+    const sources = [...summary.querySelectorAll('.node-action-list > button')];
+    openMobileActionSheet(`${name} · 节点操作`, sources, nodeMenu);
+    return;
+  }
+  const trigger = event.target.closest('[data-action]');
+  if (!trigger) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const id = Number(trigger.dataset.id || 0);
+  const kind = trigger.dataset.kind;
+  switch (trigger.dataset.action) {
+    case 'open-photo': window.openPhoto(id); break;
+    case 'edit-fault-code': openFaultCodeDrawer(id); break;
+    case 'remove-fault-code': removeFaultCode(id); break;
+    case 'patrol-to-work-order': openPatrolToWorkOrder(id); break;
+    case 'edit-member': openMemberDrawer(id); break;
+    case 'reset-member-password': resetMemberPassword(id); break;
+    case 'structure-edit':
+      openStructureDrawer(kind, Number(trigger.dataset.parentId), id || null);
+      break;
+    case 'structure-delete': openDeleteStructure(kind, id); break;
+    case 'prepare-install': prepareInstall(id); break;
+    case 'equipment-profile': openEquipmentProfile(id); break;
+    case 'show-label': showLabel(id); break;
+    case 'open-label-batch': openLabelBatch(); break;
+    case 'review-change': reviewChange(id, trigger.dataset.decision); break;
+    case 'claim-work-order': claimWorkOrder(id); break;
+    case 'withdraw-work-order': {
+      const item = state.workOrders.find((candidate) => candidate.id === id);
+      if (item) openWithdrawDrawer(item);
+      break;
+    }
+    case 'review-work-order': reviewWorkOrder(id); break;
+    case 'reopen-work-order': {
+      const item = state.workOrders.find((candidate) => candidate.id === id);
+      if (item) openReopenDrawer(item);
+      break;
+    }
+    case 'open-work-order': openWorkOrder(id); break;
+    case 'execute-task': openTaskExecution(id, kind); break;
+    case 'task-to-repair': convertTaskToRepair(id, kind); break;
+    case 'close-task-abnormal': closeTaskAbnormal(id, kind); break;
+    case 'print-page': window.print(); break;
+    default: break;
+  }
+});
 
 window.reviewChange = reviewChange;
 window.openWorkOrder = openWorkOrder;
@@ -2509,6 +3132,9 @@ window.openPhoto = (id) => {
 window.openStructureDrawer = openStructureDrawer;
 window.prepareInstall = prepareInstall;
 window.openDeleteStructure = openDeleteStructure;
+window.openTaskExecution = openTaskExecution;
+window.convertTaskToRepair = convertTaskToRepair;
+window.closeTaskAbnormal = closeTaskAbnormal;
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden || !state.me) return;
@@ -2517,5 +3143,37 @@ document.addEventListener('visibilitychange', () => {
   if (document.querySelector('#view-repairs').classList.contains('active')) guarded(loadWorkOrders).catch(() => {});
 });
 
+window.addEventListener('popstate', () => {
+  if (!document.querySelector('#mobile-action-sheet').hidden) {
+    closeMobileActionSheet({ fromHistory: true });
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  const sheet = document.querySelector('#mobile-action-sheet');
+  if (sheet.hidden) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeMobileActionSheet();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const focusable = [...sheet.querySelectorAll('button:not(:disabled)')];
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+});
+
 document.querySelector('#change-effective').value = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+document.querySelector('#report-end').value = new Date().toISOString().slice(0, 10);
+document.querySelector('#report-start').value = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+setupMobileToolbars();
+refreshNativeServerSettingsButton();
 startSession().catch((error) => flash(error.message, 'error'));

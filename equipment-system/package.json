@@ -9,7 +9,12 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "generate:templates": "node scripts/generate-templates.js",
-    "test": "node --test"
+    "test": "node --test",
+    "test:browser": "node scripts/browser-smoke.js",
+    "test:load": "node scripts/load-smoke.js",
+    "backup": "node scripts/backup-production.js",
+    "verify:backup": "node scripts/verify-backup.js",
+    "preflight": "node scripts/production-preflight.js"
   },
   "engines": {
     "node": ">=22.5.0"

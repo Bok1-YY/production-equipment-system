@@ -93,7 +93,7 @@ test('已经结束的工单不能撤回', () => {
   for (const status of ['ARRIVED', 'IN_PROGRESS']) {
     f.service.transitionWorkOrder(id, { to_status: status }, f.technician);
   }
-  f.service.updateRepairDetail(id, { trial_result: '正常' }, f.technician);
+  f.service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '正常' }, f.technician);
   f.service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, f.technician);
   f.service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, f.technician);
   assert.throws(() => f.service.withdrawWorkOrder(id, { reason: '想撤' }, f.worker), /已经结束/);
@@ -107,7 +107,7 @@ function repairAndClose(f, overrides = {}) {
   for (const status of ['ARRIVED', 'IN_PROGRESS']) {
     f.service.transitionWorkOrder(id, { to_status: status }, f.technician);
   }
-  f.service.updateRepairDetail(id, { trial_result: '正常' }, f.technician);
+  f.service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '正常' }, f.technician);
   f.service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, f.technician);
   f.service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, f.technician);
   return id;

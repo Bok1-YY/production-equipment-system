@@ -38,7 +38,12 @@ let manifest = fs.readFileSync(manifestFile, 'utf8');
 if (!manifest.includes('android:usesCleartextTraffic=')) {
   manifest = manifest.replace(
     '<application',
-    '<application android:usesCleartextTraffic="true"',
+    '<application android:usesCleartextTraffic="${ysmUsesCleartextTraffic}"',
+  );
+} else {
+  manifest = manifest.replace(
+    /android:usesCleartextTraffic="[^"]+"/,
+    'android:usesCleartextTraffic="${ysmUsesCleartextTraffic}"',
   );
 }
 for (const permission of [

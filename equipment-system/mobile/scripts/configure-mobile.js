@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const [serverUrl, sdkRoot] = process.argv.slice(2);
-if (!/^http:\/\/\d{1,3}(?:\.\d{1,3}){3}:8788$/.test(serverUrl || '')) {
+if (!/^http:\/\/\d{1,3}(?:\.\d{1,3}){3}:\d{1,5}$/.test(serverUrl || '')) {
   throw new Error(`无效的手机测试服务地址：${serverUrl || '未提供'}`);
 }
 if (!sdkRoot || !path.isAbsolute(sdkRoot)) {

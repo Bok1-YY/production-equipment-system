@@ -26,6 +26,12 @@ function migrate(db) {
       value TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS factories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       code TEXT NOT NULL UNIQUE,
@@ -290,9 +296,164 @@ function migrate(db) {
       user_id INTEGER NOT NULL REFERENCES users(id),
       created_at TEXT NOT NULL,
       expires_at TEXT NOT NULL,
-      last_seen_at TEXT
+      last_seen_at TEXT,
+      absolute_expires_at TEXT
     );
     CREATE INDEX IF NOT EXISTS sessions_by_user ON sessions(user_id);
+    CREATE INDEX IF NOT EXISTS sessions_by_expiry ON sessions(expires_at);
+
+    CREATE TABLE IF NOT EXISTS login_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL,
+      source_ip TEXT NOT NULL,
+      succeeded INTEGER NOT NULL DEFAULT 0,
+      reason TEXT,
+      attempted_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS login_attempts_by_username_time
+      ON login_attempts(username, attempted_at);
+    CREATE INDEX IF NOT EXISTS login_attempts_by_ip_time
+      ON login_attempts(source_ip, attempted_at);
+
+    CREATE TABLE IF NOT EXISTS notification_devices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token_hash TEXT NOT NULL UNIQUE,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      device_label TEXT,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      last_seen_at TEXT,
+      revoked_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS notification_devices_by_user
+      ON notification_devices(user_id);
+
+    CREATE TABLE IF NOT EXISTS idempotency_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      operation TEXT NOT NULL,
+      request_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      response_json TEXT,
+      status TEXT NOT NULL DEFAULT 'PENDING',
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      UNIQUE(user_id, operation, request_key)
+    );
+    CREATE INDEX IF NOT EXISTS idempotency_by_expiry
+      ON idempotency_requests(expires_at);
+
+    CREATE TABLE IF NOT EXISTS task_templates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_kind TEXT NOT NULL CHECK(task_kind IN ('INSPECTION', 'MAINTENANCE')),
+      name TEXT NOT NULL,
+      maintenance_level INTEGER CHECK(maintenance_level IN (1, 2, 3)),
+      status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE', 'DISABLED')),
+      created_by_user_id INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS task_template_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      template_id INTEGER NOT NULL REFERENCES task_templates(id) ON DELETE CASCADE,
+      item_name TEXT NOT NULL,
+      item_type TEXT NOT NULL DEFAULT 'CHECK'
+        CHECK(item_type IN ('CHECK', 'NUMBER', 'TEXT')),
+      standard_text TEXT,
+      unit TEXT,
+      min_value REAL,
+      max_value REAL,
+      requires_photo_on_fail INTEGER NOT NULL DEFAULT 0,
+      sequence_no INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX IF NOT EXISTS task_items_by_template
+      ON task_template_items(template_id, sequence_no, id);
+
+    CREATE TABLE IF NOT EXISTS task_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_kind TEXT NOT NULL CHECK(task_kind IN ('INSPECTION', 'MAINTENANCE')),
+      template_id INTEGER NOT NULL REFERENCES task_templates(id),
+      name TEXT NOT NULL,
+      target_type TEXT NOT NULL CHECK(target_type IN ('PROCESS', 'EQUIPMENT')),
+      target_id INTEGER NOT NULL,
+      schedule_type TEXT NOT NULL
+        CHECK(schedule_type IN ('DAILY', 'WEEKLY', 'INTERVAL', 'FIXED', 'MANUAL')),
+      interval_days INTEGER,
+      next_due_at TEXT,
+      assignee_user_id INTEGER REFERENCES users(id),
+      status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE', 'DISABLED')),
+      created_by_user_id INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS task_plans_due
+      ON task_plans(status, next_due_at);
+
+    CREATE TABLE IF NOT EXISTS scheduled_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_kind TEXT NOT NULL CHECK(task_kind IN ('INSPECTION', 'MAINTENANCE')),
+      plan_id INTEGER REFERENCES task_plans(id),
+      template_id INTEGER NOT NULL REFERENCES task_templates(id),
+      target_type TEXT NOT NULL CHECK(target_type IN ('PROCESS', 'EQUIPMENT')),
+      target_id INTEGER NOT NULL,
+      assignee_user_id INTEGER REFERENCES users(id),
+      due_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK(status IN ('PENDING', 'COMPLETED', 'ABNORMAL', 'CONVERTED', 'CANCELLED')),
+      executor TEXT,
+      executor_user_id INTEGER REFERENCES users(id),
+      started_at TEXT,
+      completed_at TEXT,
+      summary TEXT,
+      work_order_id INTEGER REFERENCES work_orders(id),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(plan_id, due_at)
+    );
+    CREATE INDEX IF NOT EXISTS scheduled_tasks_by_kind_status
+      ON scheduled_tasks(task_kind, status, due_at);
+    CREATE INDEX IF NOT EXISTS scheduled_tasks_by_assignee
+      ON scheduled_tasks(assignee_user_id, status, due_at);
+
+    CREATE TABLE IF NOT EXISTS task_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL REFERENCES scheduled_tasks(id) ON DELETE CASCADE,
+      template_item_id INTEGER NOT NULL REFERENCES task_template_items(id),
+      result_status TEXT NOT NULL CHECK(result_status IN ('PASS', 'FAIL', 'NA')),
+      measured_value REAL,
+      text_value TEXT,
+      note TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(task_id, template_item_id)
+    );
+    CREATE INDEX IF NOT EXISTS task_results_by_task ON task_results(task_id);
+
+    CREATE TABLE IF NOT EXISTS abnormal_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL UNIQUE REFERENCES scheduled_tasks(id),
+      description TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN', 'CONVERTED', 'CLOSED')),
+      work_order_id INTEGER REFERENCES work_orders(id),
+      closed_by_user_id INTEGER REFERENCES users(id),
+      closed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS abnormal_events_by_status
+      ON abnormal_events(status, created_at);
+
+    CREATE TABLE IF NOT EXISTS qr_scan_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      mapping_id INTEGER NOT NULL REFERENCES qr_mappings(id),
+      user_id INTEGER REFERENCES users(id),
+      username TEXT,
+      source_ip TEXT,
+      user_agent TEXT,
+      scanned_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS qr_scan_logs_by_mapping
+      ON qr_scan_logs(mapping_id, scanned_at);
 
     CREATE TABLE IF NOT EXISTS audit_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -300,6 +461,8 @@ function migrate(db) {
       entity_id INTEGER NOT NULL,
       action TEXT NOT NULL,
       actor TEXT NOT NULL,
+      actor_user_id INTEGER REFERENCES users(id),
+      actor_username TEXT,
       before_json TEXT,
       after_json TEXT,
       created_at TEXT NOT NULL
@@ -338,6 +501,13 @@ function migrate(db) {
   // 只能去 work_order_history 里翻文本，聚合不了。补成列之后四段时长可以直接算。
   ensureColumn(db, 'work_orders', 'assigned_at', 'TEXT');
   ensureColumn(db, 'work_orders', 'arrived_at', 'TEXT');
+  ensureColumn(db, 'work_orders', 'downtime_is_override', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'work_orders', 'downtime_override_reason', 'TEXT');
+  ensureColumn(db, 'sessions', 'absolute_expires_at', 'TEXT');
+  ensureColumn(db, 'audit_logs', 'actor_user_id', 'INTEGER REFERENCES users(id)');
+  ensureColumn(db, 'audit_logs', 'actor_username', 'TEXT');
+  ensureColumn(db, 'composition_changes', 'submitted_by_user_id', 'INTEGER REFERENCES users(id)');
+  ensureColumn(db, 'composition_changes', 'reviewed_by_user_id', 'INTEGER REFERENCES users(id)');
   backfillWorkOrderTimestamps(db);
   normalizeMergedWorkOrderStatus(db);
   // 普工报修页"常用故障"快捷按钮上出现哪几条。
@@ -350,6 +520,25 @@ function migrate(db) {
   `);
   for (const [code, name] of Object.entries(DEFAULT_EQUIPMENT_TYPES)) insertType.run(code, name, now, now);
   seedFaultCodes(db, now);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS work_orders_by_status ON work_orders(status);
+    CREATE INDEX IF NOT EXISTS work_orders_by_reporter ON work_orders(reporter_user_id, id);
+    CREATE INDEX IF NOT EXISTS work_orders_by_assignee ON work_orders(assignee_user_id, status);
+    CREATE INDEX IF NOT EXISTS work_orders_by_equipment ON work_orders(final_equipment_id, status);
+    CREATE INDEX IF NOT EXISTS work_orders_by_completed ON work_orders(completed_at);
+    CREATE INDEX IF NOT EXISTS work_order_history_by_order ON work_order_history(work_order_id, id);
+    CREATE INDEX IF NOT EXISTS work_order_parts_by_order ON work_order_parts(work_order_id, id);
+    CREATE INDEX IF NOT EXISTS composition_changes_by_status ON composition_changes(status, id);
+    CREATE INDEX IF NOT EXISTS patrols_by_process ON patrol_records(process_id, id);
+  `);
+  db.prepare(`
+    INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
+    VALUES (1, 'baseline-and-production-hardening', ?)
+  `).run(now);
+  db.prepare(`
+    INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
+    VALUES (2, 'structured-inspection-maintenance-and-scan-audit', ?)
+  `).run(now);
 }
 
 // assigned_at / arrived_at 是后加的列，历史工单为 NULL。流转历史里其实记着这两个时刻，

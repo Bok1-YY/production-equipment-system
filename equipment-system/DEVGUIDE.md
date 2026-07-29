@@ -53,7 +53,7 @@ npm run dev          # node --watch，改完自动重启
 ### 0.5 跑测试
 
 ```bash
-npm test                                   # node --test，当前 131 项
+npm test                                   # node --test，当前 139 项
 node scripts/http-smoke.js                 # HTTP 冒烟（需服务在跑）
 SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码后
 ```
@@ -68,20 +68,20 @@ SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码
               ▼
 ┌───────────────────────────────────────────────────────┐
 │  web/  零框架前端（无构建、无 npm 依赖、无打包）          │
-│    index.html  单页 + 9 个 <section class="view">      │
-│    app.js      2384 行原生 JS，按级别渲染               │
+│    index.html  单页 + 12 个 <section class="view">     │
+│    app.js      3179 行原生 JS，按级别渲染               │
 │    styles.css  设计令牌 + 760px 移动端断点              │
 └───────────────────────────┬───────────────────────────┘
                             ▼
 ┌───────────────────────────────────────────────────────┐
-│  src/server.js  Node 内置 http，478 行                  │
+│  src/server.js  Node 内置 http，826 行                  │
 │    · 会话解析（Cookie → users）→ context               │
-│    · 76 条 if 分支路由（无框架）                        │
+│    · 96 条 if 分支路由（无框架）                        │
 │    · 静态文件服务（web/ 目录）                          │
 └───────────────────────────┬───────────────────────────┘
                             ▼
 ┌───────────────────────────────────────────────────────┐
-│  src/service.js  EquipmentService，103 个方法，2421 行   │
+│  src/service.js  EquipmentService，130 个方法，3344 行   │
 │    全部业务逻辑：台账/编码/组合/工单/成员/履历/审计      │
 │    ── 依赖 ──▶ domain.js（校验+状态机+常量，无 IO）      │
 │              ▶ auth.js  （scrypt+会话+级别映射）        │
@@ -91,7 +91,7 @@ SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码
 ┌───────────────────────────────────────────────────────┐
 │  src/db.js  node:sqlite（Node 22.5+ 内置）              │
 │    openDatabase() = 建库 + migrate + 种子 + 种管理员    │
-│    23 张表，WAL 模式，单文件 data/equipment.db          │
+│    34 张表，WAL 模式，单文件 data/equipment.db          │
 └───────────────────────────────────────────────────────┘
 ```
 
@@ -109,12 +109,12 @@ SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码
 ```
 equipment-system/
 │  ── 后端 ──
-├── src/server.js        HTTP 层：会话解析、76 条路由、静态服务、错误映射
-├── src/service.js       ★ 全部业务：EquipmentService，103 个方法
+├── src/server.js        HTTP 层：会话解析、96 条路由、静态服务、错误映射
+├── src/service.js       ★ 全部业务：EquipmentService，130 个方法
 ├── src/domain.js        纯逻辑：文本/编号校验、设备编码格式、工单状态机、
 │                        设备状态常量（手工 4 态 vs 系统 2 态）、角色断言
 ├── src/auth.js          scrypt 哈希、会话签发/解析/续期、级别→角色映射、Cookie 解析
-├── src/db.js            建库与迁移（23 张表）、ensureColumn 增量加列、
+├── src/db.js            建库与迁移（34 张表）、ensureColumn 增量加列、
 │                        种子工厂车间、种子管理员、nextSequence、transaction
 ├── src/spreadsheets.js  exceljs：台账/组合模板生成、工作簿解析、组合导出
 ├── src/equipment-types.js  默认设备类型代码表（EXT/MIX/PUL…）
@@ -125,7 +125,7 @@ equipment-system/
 ├── web/app.js           ★ 全部前端逻辑（无框架、无模块化、按顺序执行）
 ├── web/styles.css       设计令牌（:root 变量）+ 组件样式 + 760px 移动端断点
 │
-│  ── 测试（node --test，131 项）──
+│  ── 测试（node --test，139 项）──
 ├── test/domain.test.js            编码格式与状态机（纯函数）
 ├── test/service.test.js           台账/编码/组合/导入/结构删除/工单/层级字段（12 项）
 ├── test/auth.test.js              密码/会话/三级/成员管理/工单可见性（11 项）
@@ -140,6 +140,8 @@ equipment-system/
 ├── test/work-order-timing.test.js 接单/到场时间戳与两段平均时长（5 项）
 ├── test/work-order-stages.test.js 阶段规则：接单合一、接单人校验、到场解锁（17 项）
 ├── test/spreadsheets.test.js      模板生成与回读
+├── test/http-security.test.js     Host/Origin、登录锁定、幂等与错误边界
+├── test/scheduled-tasks.test.js   点检保养计划、执行、异常与报表
 │
 │  ── 脚本 ──
 ├── scripts/http-smoke.js          HTTP 冒烟：401 拦截→登录→建设备→二维码→登出
@@ -165,7 +167,7 @@ equipment-system/
 
 ---
 
-## 三、数据模型（23 张表）
+## 三、数据模型（34 张表）
 
 ### 3.1 组织结构（五级）
 
@@ -232,7 +234,7 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
 - **转派一张已经在修的单不会把它退回上一阶段**：`assignWorkOrder` 只在 `SUBMITTED` 时把状态推到 `ACCEPTED`，其余情况保持当前状态。
 - `WITHDRAWABLE_STATUSES` = `['SUBMITTED', 'ACCEPTED']`，含义不变：技术员到场前。
 - `WAITING_PARTS` / `OUTSOURCED` 只能回到 `IN_PROGRESS`，不能直接跳去试运行。
-- **`CANCELLED` 现在从任何未结状态可达**（仅管理员）。原先 `ARRIVED` 之后既不能撤回也不能取消，而结单要满足三道硬校验——一张误接的垃圾单会永远挂在列表里。这是补死角，不是放权。
+- **`CANCELLED` 现在从任何未结状态可达**（仅管理员）。原先 `ARRIVED` 之后既不能撤回也不能取消，而结单要满足完整性硬校验——一张误接的垃圾单会永远挂在列表里。这是补死角，不是放权。
 - **`PENDING_REVIEW` 是历史遗留**。2026-07-26 取消了"管理员验收"环节，`TRIAL_RUN` 直通 `COMPLETED`。这个状态仍保留可达 `COMPLETED`，因为改造前可能有工单正停在那里，删掉它们就永远结不了单。**不要因为"看起来没用"就删。**
 - `assertWorkOrderTransition(from, to)` 拦非法跳转。
 
@@ -251,11 +253,13 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
 
 `WORK_ORDER_STAGES` 是有序阶段表，由 `/api/meta` 下发给界面画步骤条。等零件/外协/待审核是分支，用 `includes` 并到所属阶段，不占独立步骤。**前端不许再抄一份**——抄了就会和状态机走散（§3.4 那条已经踩过一次）。
 - **权限**：`CANCELLED` 要求管理员；其余（含 `COMPLETED`）技术员即可。结单权限 2026-07-26 从管理员下放给技术员，验收改由报修人的评价承担。
-- `COMPLETED` 前有**三道硬校验**，权限下放给技术员之后没有第二个人把关，这三道更不能丢：
+- `COMPLETED` 前有**五道硬校验**，权限下放给技术员之后没有第二个人把关，这五道更不能丢：
   - `trial_result` 非空（修完得试过）；
   - **`final_equipment_id` 非空**——工单不挂设备就结掉，设备状态联动、维修履历和 MTBF 之类的统计全都落空。报修时允许"无法判断具体设备"，但修完了技术员一定知道自己修的是哪台，用「修正故障设备」认领即可。
   - **`fault_code_id` 非空**（2026-07-26 新增）——报修时故障码改成了选填（给普工减负，见 §3.6），代价必须在这里收回来：没有码，故障统计就等于没做。技术员用「确认故障分类」补上。
-  - 三道都对 `CANCELLED` 和撤回**豁免**，否则误报产生的无主工单会永远挂着。这一点每次加新校验都要重新想一遍。
+  - **`diagnosis` 非空**——必须留下诊断结论；
+  - **`repair_action` 非空**——必须说明实际采取的维修措施。
+  - 五道都对 `CANCELLED` 和撤回**豁免**，否则误报产生的无主工单会永远挂着。这一点每次加新校验都要重新想一遍。
 - **时间戳**：`assigned_at` 在 `assignWorkOrder` 里落（`COALESCE` 保护，转派不覆盖首次接单时刻）、`arrived_at` 在 `to === 'ARRIVED'` 时落、`started_at` 在 `IN_PROGRESS`、`completed_at` 在 `COMPLETED`。四个时刻单调递增，"报修→接单→到场→完成"四段时长才算得出来。
   - 加这两列的原因：原先只有 `started_at` / `completed_at`，"路上花了多久"只能去 `work_order_history` 里翻文本，聚合不了。
   - `dashboard()` 的两个均值**只统计时间戳齐全的已完成工单**——改造前的老工单为 NULL，算进去会把均值拖低。没有数据时返回 `null` 而不是 `0`，前端显示 `—`：`0` 会被读成"响应零延迟"。
@@ -274,7 +278,7 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
 ### 3.6 故障代码与照片
 
 - `fault_codes`：三级结构（`category` / `part` / `symptom`），`UNIQUE(category, part, symptom)` 防重复。服务端把可读文本回填进 `work_orders.fault_symptom`，所以工单列表、履历、审计这些下游展示一行没改；`fault_code_id` 才是统计用的结构化字段。
-  - **报修时选填、结单前必填**（2026-07-26 调整）。这不是重新打开"只填自由文本"的旁路——旁路的危害是统计落空，而这里只是把**录入点从报修挪到了结单**：普工不必在三级分类里翻，到场看过的技术员分类本来就更准。收口在 §3.4 的第三道硬校验。
+  - **报修时选填、结单前必填**（2026-07-26 调整）。这不是重新打开"只填自由文本"的旁路——旁路的危害是统计落空，而这里只是把**录入点从报修挪到了结单**：普工不必在三级分类里翻，到场看过的技术员分类本来就更准。收口在 §3.4 的结单硬校验。
   - 不选码时**必须给一句话说明**（`description`），否则这张工单对技术员没有任何信息量。那句话同时回填 `fault_symptom`，所以列表上显示的是普工原话；技术员补码后 `fault_symptom` 被重写成三级文本，**普工原话仍留在 `description` 里不会丢**。
   - 已知代价：故障码上的 `requires_photo` 在"不选码"这条路径上没法生效——报修时还不知道是什么故障。选了码（含快捷按钮）的仍然强制。
   - `src/fault-codes.js` 里 23 条**预置建议值**（按旧系统 YEMS 的 21 个扁平故障码整理），`is_seeded=1`，**只在表为空时种入**——管理员删掉的预置项不会在重启后复活。**待设备科确认**。
@@ -282,26 +286,36 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
   - `is_common`：进不进普工报修页的「常见故障」快捷按钮。`frequentFaultCodes()` 先按该设备类型的历史频次排，**库里还没有工单时回退到 `is_common`**——否则第一天打开报修页是一排空按钮。加这个标记而不是硬编码"综合类优先"，是因为类别名管理员可以改，magic string 会静默失效。
     - `ensureColumn` 加列后有一次 `backfillCommonFaultCodes()`：只动 `is_seeded=1` 的行，且**任意一条已为 1 就不再补**——否则管理员取消掉的标记会在重启后复活（和"删掉的预置项不复活"同一个原则）。
   - 已被工单引用的只能停用不能删。
-- `attachments`：多态附件表（`target_type` 为 `WORK_ORDER` / `PATROL`）。文件落 `data/attachments/YYYYMM/<32位随机名>.<ext>`，库里只存相对路径。
+- `attachments`：多态附件表（`target_type` 为 `WORK_ORDER` / `PATROL` / `TASK`）。文件落 `data/attachments/YYYYMM/<32位随机名>.<ext>`，库里只存相对路径。
   - **服务端只认魔数字节**（JPEG `FF D8 FF`、PNG `89 50 4E 47`、WEBP `RIFF....WEBP`），绝不信前端声明的 mime——否则改个扩展名就能上传任意文件。
-  - 单张 ≤2MB、每个对象 ≤6 张。前端先用 canvas 压到长边 1600px 再 base64 提交，走的是和 Excel 导入相同的通道，**不引入 multipart 依赖**。
+  - 单张 ≤2MB、每个对象 ≤6 张、解码后合计 ≤12MB；base64 做严格往返校验。前端先用 canvas 压到长边 1600px 再提交。
   - 落盘和写库在同一个 `transaction()` 里；任何一张失败都会 `unlinkSync` 清掉同批已写下的文件，不留孤儿。
   - 可见性跟随所属工单（`attachmentFile()` 内部调 `getWorkOrder(id, context)` 复用同一套判定）。
 
 ### 3.7 巡检
 
-`patrol_records`：技术员的日常现场巡查。**刻意做得很轻**——扫码选设备 + 拍照 + 必填一段 `findings`（发现的问题与处理），没有旧系统那种逐项打勾的巡检表，否则没人愿意每天填。
+`patrol_records` 保留为技术员的快速现场巡查：扫码选设备 + 拍照 + 必填一段 `findings`。正式的逐项点检走下一节的结构化任务，二者不混用。
 
 只给 `equipment_id` 不给 `process_id` 时，会按当前安装关系自动带出所在工序。`convertPatrolToWorkOrder()` 一键转维修：巡检发现写进工单 `description`，`work_order_id` 回写实现双向关联，工单历史里留 `FROM_PATROL` 事件，并触发设备状态联动。
 
-### 3.8 成员与会话
+### 3.8 结构化点检与保养
+
+- `task_templates` / `task_template_items`：`task_kind` 区分 `INSPECTION` 与 `MAINTENANCE`，项目支持 CHECK/NUMBER/TEXT、标准、单位、上下限与异常拍照。
+- `task_plans`：对象为 PROCESS/EQUIPMENT，周期为 DAILY/WEEKLY/INTERVAL/FIXED/MANUAL。
+- `scheduled_tasks` / `task_results`：`UNIQUE(plan_id,due_at)` 保证到期任务幂等生成；技术员逐项提交，数值越界由服务端强制判 FAIL。
+- `abnormal_events`：异常可关闭或转工单；任务与工单双向保存关联。
+
+### 3.9 成员与会话
 
 - `users`：`username`（工号，小写唯一）、`display_name`、`level`(1/2/3)、`password_hash` + `password_salt`（scrypt，每次新盐）、`status`、`must_change_password`。**账号只停用不删除**，避免审计断链；系统始终保留至少一个启用的管理员。
-- `sessions`：`token`（32 字节 base64url）、`user_id`、`expires_at`。12 小时有效、每次请求滑动续期。改级别/停用/重置密码会 `destroyUserSessions` 立即踢掉旧会话。
+- `sessions`：12 小时绝对到期，活动续期受 `absolute_expires_at` 封顶，且最多每 5 分钟写一次 `last_seen_at`。
+- `notification_devices`：Android 后台通知使用独立 7 天 Bearer 令牌，数据库只存 SHA-256，App 用 AndroidKeyStore AES-GCM 加密落盘；不再保存或轮询会话 Cookie。
+- `login_attempts`：账号与来源 IP 的持久化失败记录，支持账号锁定和来源限流。
+- `idempotency_requests`：报修、巡检、任务执行和零件记录的重复提交防护。
 
-### 3.9 审计
+### 3.10 审计
 
-- `audit_logs`：`entity_type` / `entity_id` / `action` / `actor` / `before_json` / `after_json`。几乎每个写操作都写一条。
+- `audit_logs`：除显示名 `actor` 外还保存 `actor_user_id` / `actor_username`，避免同名人员导致追溯歧义。
 - `work_order_history`：工单专属时间线，含 `event_type` / 状态迁移 / 操作人 / 备注。
 
 因为身份来自真实登录会话，`actor` 现在是可信的。
@@ -351,7 +365,7 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
 
 ---
 
-## 五、后端：`server.js` 的 76 条路由
+## 五、后端：`server.js` 的 96 条路由
 
 ### 5.1 请求流程
 
@@ -378,11 +392,13 @@ http.createServer
 - **导入导出** `GET /api/templates` + 两个 `/download` · `POST /api/imports/{equipment,line-composition}/{preview,commit}` · `GET /api/exports/line-composition.xlsx`
 - **组合变动** `GET|POST /api/composition-changes` · `POST /api/composition-changes/:id/review`
 - **工单** `GET|POST /api/work-orders` · `GET /api/work-orders/:id` · `POST :id/assign` · `POST :id/transition` · `PUT :id/repair-detail` · `POST :id/correct-equipment` · `POST :id/parts`
-- **二维码** `GET /api/qr/:token`(解析) · `GET /api/qr/:token/image.svg`(实时生成 SVG)
+- **二维码** `GET /api/qr/:token`(解析并记扫描日志) · `GET /api/qr/:token/image.svg`(实时生成 SVG) · `GET /api/qr/process-labels`
 - **评价** `POST /api/work-orders/:id/{withdraw,review,reopen}` · `GET /api/reviews/me`（L2 只看自己的综合分）· `GET /api/reviews`、`GET /api/reviews/technicians`（均 L3）
 - **故障代码** `GET /api/fault-codes`（报修用，只返启用的；`?all=1` 给管理页）· `POST /api/fault-codes` · `PUT|DELETE /api/fault-codes/:id`（写操作 L3）
 - **照片** `POST /api/work-orders/:id/attachments`（给已有工单补拍）· `GET /api/attachments/:id/file`（流式返回，按所属工单判可见性）· `DELETE /api/attachments/:id`
 - **巡检** `GET|POST /api/patrols`（L2+）· `GET /api/patrols/:id` · `POST /api/patrols/:id/to-work-order`
+- **点检保养** `/api/task-templates/:kind` · `/api/task-plans/:kind` · `/api/tasks/:kind` · `POST /api/tasks/:id/{execute,to-work-order,close-abnormal}`
+- **运营报表** `GET /api/reports/operations` · `GET /api/reports/operations.xlsx`
 - **审计** `GET /api/audit-logs?limit=`
 
 ### 5.3 加新端点的范式
@@ -467,13 +483,14 @@ node --check web/app.js       # 语法
 
 ### 6.6 改数据结构前先备份数据库
 
-**git 保护的是代码，不是数据**——`data/*.db` 全部被 `.gitignore` 排除，回退代码不会回退数据。所以 `data/` 里的 `equipment-before-*.db` 仍然是唯一的数据历史保护手段。沿用这个命名：
+**git 保护的是代码，不是数据**——`data/*.db` 全部被 `.gitignore` 排除，回退代码不会回退数据。生产环境使用一致性备份脚本，不直接复制正在写入的 WAL 数据库：
 
 ```bash
-cp data/equipment.db data/equipment-before-<改动名>-<YYYYMMDD>.db
+YSM_DB_PATH=/data/equipment.db node scripts/backup-production.js /backups
+node scripts/verify-backup.js /backups/ysm-backup-时间戳
 ```
 
-`migrate()` 全部用 `CREATE TABLE IF NOT EXISTS` + `ensureColumn()`（先 `PRAGMA table_info` 再 `ALTER TABLE ADD COLUMN`），所以对老库是安全的增量迁移。**加列必须走 `ensureColumn`，不要直接改建表语句**——老库不会重建表。
+脚本用 `VACUUM INTO` 生成数据库一致性快照，附件归档并写 SHA-256 清单；恢复脚本要求 `YSM_CONFIRM_RESTORE=YES`，且会先保存恢复前副本。`schema_migrations` 记录已应用版本；兼容老库的新增列仍通过 `ensureColumn()`。
 
 ### 6.7 无头浏览器自检法（验证前端时用，实测可行）
 
@@ -527,7 +544,7 @@ token 本身是稳定映射（存在 `qr_mappings`），换地址只需改环境
 - **停机时长双口径**：`started_at`/`completed_at` 自动记录，`downtime_minutes` 由技术员手填，两者可能打架。
 - **变动申请不能撤回**：`CHANGE_STATUSES` 里定义了 `CANCELLED` 但全代码从不使用。
 - **审核用 `prompt()`**：`reviewChange()` 还在用浏览器原生弹窗填驳回原因，看不到申请详情，移动端体验差。
-- **`service.js` 已 2421 行**：目前还能一个文件装下，但成员管理那组方法（`listUsers`/`createUser`/…）和履历聚合是相对独立的，将来真要拆先拆这两块。
+- **`service.js` 已 3344 行**：目前还能一个文件装下，但成员管理、计划任务、运营报表和履历聚合已形成相对独立的功能组；将来真要拆，优先按这些边界拆。
 
 ---
 
@@ -563,7 +580,7 @@ token 本身是稳定映射（存在 `qr_mappings`），换地址只需改环境
 - **建档后锁定**：设备码、类型代码、关键规格不可改；名称、别名、品牌、负责人等可改。
 - **组合导入的设备匹配顺序**：永久编码 → 原资产编号 → 品牌+出厂编号。**绝不按名称模糊匹配**；都匹配不上时必须提供名称+类别+类型代码，由系统发新码。
 - **两个导入都是"预览 → 确认"两步 + 整批事务**：任意一行错，整批不写入。组合导入还有文件哈希去重（同一个 xlsx 不能成功导入两次）。
-- **结构删除**：车间/产线/工序/机位可递归删除，但存在**设备安装历史或组合变动记录时禁止删除**；关联工单不阻断，会连同零件和流转记录一起删掉。工厂节点不提供删除。
+- **结构删除**：车间/产线/工序/机位只允许递归删除完全没有业务历史的空分支；存在设备安装、组合变动、维修工单或巡检记录时一律阻断。绝不通过删结构级联清除工单、零件、评价或附件；正常退役走 `status=DISABLED`。工厂节点不提供删除。
 
 ---
 
@@ -640,11 +657,11 @@ token 本身是稳定映射（存在 `qr_mappings`），换地址只需改环境
 3. **问题信息** —— 一直可见。
 4. **到场后解锁**：确认故障分类、修正故障设备。
 5. **开始维修后解锁**：诊断与维修记录、使用零件。
-6. **结单前检查**（`TRIAL_RUN` 阶段）—— 三道硬校验各一行，✓/✗ 一眼看到，缺项写明"去哪补"，按钮禁用并显示"还差 N 项才能结单"。
+6. **结单前检查**（`TRIAL_RUN` 阶段）—— 五道硬校验（故障设备、故障分类、诊断、维修措施、试运行）各一行，✓/✗ 一眼看到，缺项写明"去哪补"，按钮禁用并显示"还差 N 项才能结单"。
 
 三条实现约束：
 
-- **检查清单的判定条件必须和服务端 `transitionWorkOrder` 里那三个 `if` 一致**。前端只是把它们提前显示出来，**把关仍然在服务端**——`browser-quick.js` / `browser-attribution.js` 里都有一条"绕过界面直接打接口，后端必须照样 409"的断言守着这一点。
+- **检查清单的判定条件必须和服务端 `transitionWorkOrder` 的五项结单校验一致**。前端只是把它们提前显示出来，**把关仍然在服务端**；`test/work-order-review.test.js` 和 `scripts/browser-smoke.js` 分别覆盖接口规则与真实页面运行。
 - **不是接单人就什么按钮都不给**，只显示「这张工单由某某负责，需要接手请让管理员转派」。判定 `isMineToWork` 和服务端 `assertOwnWorkOrder` 是同一套。
 - 阶段按钮用 `data-to-status` 属性携带目标状态，`bindWorkOrderForms` 里统一绑一次。**不要退回通用下拉**——按钮文案就是动作本身，技术员不用猜。
 
@@ -658,7 +675,7 @@ token 本身是稳定映射（存在 `qr_mappings`），换地址只需改环境
 
 - **systemd 用户服务** `~/.config/systemd/user/ysm-equipment-system.service`，`WorkingDirectory` 指向本目录，日志追加到 `data/server.log`，`Restart=on-failure`。
 - **改完代码必须重启服务**（`systemctl --user restart ysm-equipment-system.service`，或双击停止再启动），前端改动只需浏览器刷新。
-- **备份**：停服务后拷 `data/equipment.db` 即得一致副本；在线运行时注意 `-wal`。正式使用建议至少每日备份 + 定期恢复演练。
+- **备份**：正式环境执行 `scripts/backup-production.js`，得到一致数据库、附件归档和 SHA-256 清单；用 `scripts/verify-backup.js` 校验。不要在线直接复制主库，恢复前必须停 App，并定期用 `scripts/restore-production.js` 做隔离演练。
 - **上 HTTPS 反代之后**：设 `YSM_SECURE_COOKIE=1`，并把 `PUBLIC_BASE_URL` 改成正式域名。
 
 ---
@@ -671,15 +688,11 @@ token 本身是稳定映射（存在 `qr_mappings`），换地址只需改环境
 - 提交信息沿用 `feat/fix/docs/chore(scope): 说明` 风格，并保持「改完在 `开发日志.md` 顶部追加一条」的习惯。
 - 代码里 `ysm-admin-2026` 是**公开的种子密码**（首次登录强制改密，README 里明确写着），部署时必须完成首次改密。`资料整理/` 的真实台账不进入公开仓库；`导入模板/` 只保留通用示例数据。
 
-## 十二、手机化的前置约束（重要）
+## 十二、正式手机端约束（重要）
 
-当前系统**手机上打不开**，不是界面问题，是三个硬约束：
+Android 正式包通过 `mobile/scripts/build-production.sh https://正式域名` 构建：仅接受 HTTPS，release 清单禁用明文流量与系统备份，签名、包名和版本全部由环境变量注入。后台维修通知使用独立 7 天设备令牌并由 AndroidKeyStore 加密保存，不保存网页会话 Cookie。
 
-1. **只监听 `127.0.0.1`** → 手机根本连不到。要改 `HOST=0.0.0.0` 并让手机和服务器在同一局域网。
-2. **相机 API 需要安全上下文** → 浏览器只在 HTTPS 或 `localhost` 下允许 `getUserMedia`。想在页面里直接扫码就必须有证书；否则只能靠手机自带相机 App 扫码打开链接（那要求 `PUBLIC_BASE_URL` 是手机能访问的地址）。
-3. **`PUBLIC_BASE_URL` 决定二维码内容** → 现在是 `http://127.0.0.1:8787`，打出来的铭牌手机扫了打不开。**这就是"正式地址定下来前别批量打印铭牌"的真正原因。**
-
-完整的分阶段手机化方案见 [`手机化路线图.md`](手机化路线图.md)。
+`PUBLIC_BASE_URL` 与 `YSM_TRUSTED_ORIGIN` 必须使用同一正式 HTTPS 域名；它同时决定设备和工序二维码的永久地址。域名未确定前不得批量打印二维码。正式构建还必须提供 release keystore，并在发布前执行 Android release 单元测试、lint、APK 和 AAB 构建。
 
 ---
 

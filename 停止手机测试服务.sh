@@ -4,6 +4,7 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$ROOT_DIR/equipment-system"
 PID_FILE="$PROJECT_DIR/data/mobile-test.pid"
+SYSTEMD_UNIT="ysm-equipment-mobile-test.service"
 
 notify_result() {
   local message="$1"
@@ -13,6 +14,14 @@ notify_result() {
       --text="$(printf '%b' "$message")" 2>/dev/null || true
   fi
 }
+
+if command -v systemctl >/dev/null 2>&1 &&
+    systemctl --user is-active --quiet "$SYSTEMD_UNIT" 2>/dev/null; then
+  systemctl --user stop "$SYSTEMD_UNIT"
+  rm -f "$PID_FILE"
+  notify_result "手机测试服务已停止。"
+  exit 0
+fi
 
 if [[ ! -f "$PID_FILE" ]]; then
   notify_result "手机测试服务当前没有运行。"

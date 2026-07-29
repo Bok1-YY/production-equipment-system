@@ -4,22 +4,48 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>暂时无法连接</title>
+  <script src="offline.js" defer></script>
   <style>
     body { margin: 0; min-height: 100vh; display: grid; place-items: center;
       background: #f3f6f2; color: #183326; font-family: sans-serif; }
-    main { max-width: 420px; margin: 24px; padding: 28px; border-radius: 18px;
+    main { width: min(460px, calc(100% - 32px)); margin: 24px; padding: 28px; border-radius: 18px;
       background: white; box-shadow: 0 12px 40px #18332618; }
     h1 { font-size: 24px; }
     p { line-height: 1.7; color: #506158; }
     button { width: 100%; border: 0; border-radius: 10px; padding: 14px;
       background: #21643c; color: white; font-size: 16px; }
+    button.secondary { margin-top: 10px; background: #e7f1eb; color: #21643c; }
+    button:disabled { opacity: .55; }
+    form { margin-top: 20px; padding-top: 18px; border-top: 1px solid #dce6df; }
+    label { display: grid; gap: 7px; color: #31483b; font-size: 14px; font-weight: 700; }
+    input { width: 100%; box-sizing: border-box; padding: 13px 12px; border: 1px solid #bfcfc5;
+      border-radius: 9px; font: 14px ui-monospace, monospace; }
+    .hint { margin: 8px 0 12px; font-size: 12px; overflow-wrap: anywhere; }
+    .status { min-height: 22px; margin: 8px 0; font-size: 13px; }
+    .status.success { color: #21643c; font-weight: 700; }
+    .status.error { color: #a43232; font-weight: 700; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+    @media (max-width: 420px) { main { padding: 22px 18px; } .actions { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <main>
-    <h1>暂时无法连接电脑</h1>
-    <p>请确认电脑上的“手机测试服务”已经启动，并且电脑与手机连接同一个 Wi-Fi。电脑 IP 改变后，需要重新打包并安装测试版。</p>
-    <button type="button" onclick="location.reload()">重新连接</button>
+    <h1>暂时无法连接设备系统</h1>
+    <p>请检查手机网络后重试。如果电脑地址或云服务器地址变了，可以直接在下面修改。</p>
+    <button type="button" id="retry">重新连接</button>
+    <form id="server-form">
+      <label>服务器根地址
+        <input id="server-url" type="text" inputmode="url" autocapitalize="none"
+          spellcheck="false" placeholder="https://equipment.example.com" required>
+      </label>
+      <p class="hint" id="default-url"></p>
+      <p class="status" id="status" role="status"></p>
+      <div class="actions">
+        <button type="button" class="secondary" id="test">测试连接</button>
+        <button type="submit">保存并连接</button>
+      </div>
+      <button type="button" class="secondary" id="reset">恢复安装包默认地址</button>
+    </form>
   </main>
 </body>
 </html>

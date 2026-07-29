@@ -46,6 +46,33 @@ test('一个工厂可新增多个车间，编码锁定且名称可修改', () =>
   db.close();
 });
 
+test('结构可停用并保留历史，停用节点及其下级不能再创建业务', () => {
+  const { db, service, process } = fixture();
+  const qrToken = service.processQrLabels().find((item) => item.id === process.id).qr_token;
+  const disabled = service.updateStructureStatus('process', process.id, { status: 'DISABLED' }, admin);
+  assert.equal(disabled.status, 'DISABLED');
+  assert.equal(service.organizationTree()[0].workshops[0].lines[0].processes[0].status, 'DISABLED');
+  assert.throws(
+    () => service.createPosition({
+      process_id: process.id, code: 'YSM-L01-EX-P03', name: '停用工序下的机位',
+    }, admin),
+    /已停用/,
+  );
+  assert.throws(
+    () => service.createWorkOrder({ process_id: process.id, description: '停用工序报修' }, employee),
+    /已停用/,
+  );
+  assert.throws(() => service.resolveQr(qrToken, employee), /已停用/);
+  assert.equal(service.processQrLabels().some((item) => item.id === process.id), false);
+
+  const enabled = service.updateStructureStatus('process', process.id, { status: 'ACTIVE' }, admin);
+  assert.equal(enabled.status, 'ACTIVE');
+  assert.doesNotThrow(() => service.createWorkOrder({
+    process_id: process.id, description: '重新启用后可以报修',
+  }, employee));
+  db.close();
+});
+
 test('设备自动获得永久流水码且二维码映射可解析', () => {
   const { db, service, faultCode } = fixture();
   const first = service.createEquipment(equipmentInput({ standard_name: '单螺杆挤出机', category: '生产主机', key_spec: '135' }), admin);
@@ -177,7 +204,7 @@ test('报修、分派、维修记录、零件和审核形成完整历史', () =>
   service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, systemAdmin);
   service.updateRepairDetail(id, {
     diagnosis: '加热回路断路', root_cause: '接触器烧蚀', repair_action: '更换接触器并紧固线路',
-    trial_result: '连续升温30分钟正常', downtime_minutes: 45,
+    trial_result: '连续升温30分钟正常', downtime_minutes: 45, downtime_override_reason: '按现场停机记录修正',
   }, systemAdmin);
   service.addWorkOrderPart(id, { part_name: '交流接触器', specification: 'CJX2-2510', quantity: 1, unit: '只', source: '设备科备件柜' }, systemAdmin);
   service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, systemAdmin);
@@ -263,11 +290,14 @@ test('组合导入严格复用原资产编号，并阻止文件内部层级冲�
   db.close();
 });
 
-test('结构分支删除会级联清理维修工单，但有安装历史时必须阻断', () => {
+test('结构分支只允许删除无业务历史的空分支，工单和安装历史都必须保留', () => {
   const empty = fixture();
   const preview = empty.service.structureDeletionPreview('line', empty.line.id);
   assert.equal(preview.deletable, true);
-  assert.deepEqual(preview.counts, { workshops: 0, lines: 1, processes: 1, positions: 2, work_orders_to_delete: 0 });
+  assert.deepEqual(preview.counts, {
+    workshops: 0, lines: 1, processes: 1, positions: 2,
+    work_orders_to_delete: 0, patrol_records: 0,
+  });
   const deleted = empty.service.deleteStructureBranch('line', empty.line.id, admin);
   assert.equal(deleted.deleted.positions, 2);
   assert.equal(empty.service.organization().lines.some((item) => item.id === empty.line.id), false);
@@ -277,11 +307,12 @@ test('结构分支删除会级联清理维修工单，但有安装历史时必�
   const withOrder = fixture();
   withOrder.service.createWorkOrder({ process_id: withOrder.process.id, fault_code_id: withOrder.faultCode.id }, employee);
   const orderPreview = withOrder.service.structureDeletionPreview('line', withOrder.line.id);
-  assert.equal(orderPreview.deletable, true);
+  assert.equal(orderPreview.deletable, false);
   assert.equal(orderPreview.counts.work_orders_to_delete, 1);
-  withOrder.service.deleteStructureBranch('line', withOrder.line.id, admin);
-  assert.equal(withOrder.db.prepare('SELECT COUNT(*) AS count FROM work_orders').get().count, 0);
-  assert.equal(withOrder.db.prepare('SELECT COUNT(*) AS count FROM work_order_history').get().count, 0);
+  assert.match(orderPreview.blockers.join('；'), /维修工单/);
+  assert.throws(() => withOrder.service.deleteStructureBranch('line', withOrder.line.id, admin), /维修工单/);
+  assert.equal(withOrder.db.prepare('SELECT COUNT(*) AS count FROM work_orders').get().count, 1);
+  assert.equal(withOrder.db.prepare('SELECT COUNT(*) AS count FROM work_order_history').get().count, 1);
   withOrder.db.close();
 
   const withInstallation = fixture();

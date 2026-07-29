@@ -259,7 +259,7 @@ test('走完整条路：接单 → 到场 → 维修 → 试运行 → 结单', 
   f.service.assignWorkOrder(id, {}, f.technician);
   f.service.transitionWorkOrder(id, { to_status: 'ARRIVED' }, f.technician);
   f.service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, f.technician);
-  f.service.updateRepairDetail(id, { repair_action: '补充润滑脂', trial_result: '异响消除' }, f.technician);
+  f.service.updateRepairDetail(id, { diagnosis: '轴承缺油', repair_action: '补充润滑脂', trial_result: '异响消除' }, f.technician);
   f.service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, f.technician);
   const done = f.service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, f.technician).work_order;
   assert.equal(done.status, 'COMPLETED');

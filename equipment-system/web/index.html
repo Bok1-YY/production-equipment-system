@@ -12,10 +12,15 @@
       <div class="brand-mark">YS</div>
       <div><strong>优胜美设备管理</strong><span>设备编码 · 产线组合 · 变动追溯</span></div>
     </div>
-    <div class="identity" id="identity" hidden>
-      <div class="identity-user"><strong id="identity-name"></strong><span id="identity-level"></span></div>
-      <button class="secondary small" id="open-change-password">修改密码</button>
-      <button class="secondary small" id="logout">退出</button>
+    <div class="topbar-actions">
+      <button class="secondary small server-settings-button" id="server-settings-button" hidden>服务器</button>
+      <div class="identity" id="identity" hidden>
+        <div class="identity-user"><strong id="identity-name"></strong><span id="identity-level"></span></div>
+        <button class="secondary small" id="open-change-password">修改密码</button>
+        <button class="secondary small" id="logout">退出</button>
+      </div>
+      <button class="secondary small mobile-more-button" id="mobile-more-button"
+        type="button" hidden aria-haspopup="dialog">更多</button>
     </div>
   </header>
 
@@ -35,8 +40,8 @@
       <h1>请先修改密码</h1>
       <p class="hint">初始密码和管理员重置的密码只能用一次。改密之后才能使用系统。</p>
       <label>当前密码<input type="password" name="old_password" autocomplete="current-password" required></label>
-      <label>新密码<input type="password" name="new_password" autocomplete="new-password" minlength="8" required></label>
-      <label>确认新密码<input type="password" name="confirm_password" autocomplete="new-password" minlength="8" required></label>
+      <label>新密码<input type="password" name="new_password" autocomplete="new-password" minlength="12" required></label>
+      <label>确认新密码<input type="password" name="confirm_password" autocomplete="new-password" minlength="12" required></label>
       <button type="submit">保存新密码</button>
       <button type="button" class="secondary" id="cancel-first-password">退出登录</button>
     </form>
@@ -47,6 +52,8 @@
       <button class="nav-item active" data-view="dashboard" data-min-level="2">总览</button>
       <button class="nav-item" data-view="repairs" data-min-level="1">维修报修</button>
       <button class="nav-item" data-view="patrol" data-min-level="2">设备巡检</button>
+      <button class="nav-item" data-view="inspection" data-min-level="2">结构化点检</button>
+      <button class="nav-item" data-view="maintenance" data-min-level="2">设备保养</button>
       <button class="nav-item" data-view="equipment" data-min-level="2">设备台账</button>
       <button class="nav-item" data-view="structure" data-min-level="2">产线组合</button>
       <button class="nav-item" data-view="changes" data-min-level="3">设备变动</button>
@@ -54,6 +61,7 @@
       <button class="nav-item" data-view="fault-codes" data-min-level="3">故障代码</button>
       <button class="nav-item" data-view="members" data-min-level="3">成员管理</button>
       <button class="nav-item" data-view="logs" data-min-level="3">操作日志</button>
+      <button class="nav-item" data-view="reports" data-min-level="2">运营报表</button>
     </nav>
 
     <main>
@@ -67,14 +75,14 @@
           <div>
             <p class="eyebrow">建议顺序</p>
             <h2>先建位置，再建设备，然后提交安装申请</h2>
-            <p>产线、工序、机位描述生产结构；永久设备码描述设备本体。所有装卸移动均经设备科确认后生效。</p>
+            <p>产线、工序、机位描述生产结构；永久设备码描述设备本体。所有装卸移动均由另一名管理员复核后生效。</p>
           </div>
           <ol><li>创建产线、工序与机位</li><li>录入独立设备，系统自动分配永久码</li><li>提交安装或移动申请</li><li>审核后形成可追溯的产线组合</li></ol>
         </div>
       </section>
 
       <section class="view" id="view-equipment">
-        <div class="page-title"><div><p class="eyebrow">永久资产身份</p><h1>设备台账</h1></div><div class="toolbar"><a class="button-link" href="/api/templates/equipment/download" data-min-level="3" download>下载Excel模板</a><label class="button-link file-button" data-min-level="3">批量导入<input type="file" id="equipment-import" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label><button class="secondary" data-min-level="3" onclick="openLabelBatch()">批量打印铭牌</button><input id="equipment-search" placeholder="搜索编码、名称或别名"><button class="secondary" id="search-equipment">搜索</button></div></div>
+        <div class="page-title"><div><p class="eyebrow">永久资产身份</p><h1>设备台账</h1></div><div class="toolbar" data-mobile-toolbar="设备台账操作"><a class="button-link" href="/api/templates/equipment/download" data-min-level="3" data-mobile-overflow download>下载Excel模板</a><label class="button-link file-button" data-min-level="3" data-mobile-overflow>批量导入<input type="file" id="equipment-import" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label><button class="secondary" data-min-level="3" data-action="open-label-batch" data-mobile-overflow>批量打印铭牌</button><input id="equipment-search" data-mobile-primary placeholder="搜索编码、名称或别名"><button class="secondary" id="search-equipment" data-mobile-primary>搜索</button></div></div>
         <div class="split">
           <form class="card form-card" id="equipment-form" data-min-level="3">
             <h2>新建设备</h2>
@@ -98,15 +106,15 @@
       </section>
 
       <section class="view" id="view-structure">
-        <div class="page-title"><div><p class="eyebrow">车间 → 产线 → 工序 → 机位 → 当前设备</p><h1>产线组合树</h1></div><div class="toolbar"><button id="add-workshop" data-min-level="3">新增车间</button><a class="button-link" href="/api/templates/line-composition/download" data-min-level="3" download>下载组合模板</a><label class="button-link file-button" data-min-level="3">导入组合<input type="file" id="composition-import" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label><a class="button-link" href="/api/exports/line-composition.xlsx" download>导出当前组合</a><button class="secondary" id="refresh-tree">刷新</button></div></div>
+        <div class="page-title"><div><p class="eyebrow">车间 → 产线 → 工序 → 机位 → 当前设备</p><h1>产线组合树</h1></div><div class="toolbar" data-mobile-toolbar="产线组合操作"><button id="add-workshop" data-min-level="3" data-mobile-overflow>新增车间</button><a class="button-link" href="/api/templates/line-composition/download" data-min-level="3" data-mobile-overflow download>下载组合模板</a><label class="button-link file-button" data-min-level="3" data-mobile-overflow>导入组合<input type="file" id="composition-import" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label><a class="button-link" href="/api/exports/line-composition.xlsx" data-mobile-overflow download>导出当前组合</a><button class="secondary" id="print-process-labels" data-mobile-overflow>打印工序二维码</button><button class="secondary" id="refresh-tree" data-mobile-primary>刷新</button></div></div>
         <div class="card tree-card">
-          <div class="card-head"><div><h2>全厂设备结构</h2><p class="hint">点击箭头展开；使用节点右侧按钮新增、编辑或安装设备。</p></div><span id="tree-summary" class="pill"></span></div>
+          <div class="card-head"><div><h2>全厂设备结构</h2><p class="hint">点击箭头展开；手机上点“操作”新增、编辑或安装设备。</p></div><span id="tree-summary" class="pill"></span></div>
           <div id="organization-tree" class="organization-tree"><div class="empty">正在加载结构……</div></div>
         </div>
       </section>
 
       <section class="view" id="view-changes">
-        <div class="page-title"><div><p class="eyebrow">生产主管提交 · 设备科确认</p><h1>设备变动</h1></div></div>
+        <div class="page-title"><div><p class="eyebrow">管理员提交 · 另一名管理员复核</p><h1>设备变动</h1></div></div>
         <div class="split narrow-left">
           <form class="card form-card" id="change-form">
             <h2>提交变动申请</h2>
@@ -116,14 +124,14 @@
             <label id="to-position-wrap">目标机位<select name="to_position_id" id="change-position"></select></label>
             <label>实际生效时间<input type="datetime-local" name="effective_at" id="change-effective"></label>
             <label>变动原因*<textarea name="reason" required rows="3"></textarea></label>
-            <button>提交设备科确认</button>
+            <button>提交另一名管理员复核</button>
           </form>
           <div class="card table-card"><div class="card-head"><h2>变动申请</h2><span class="hint">审核时再次校验现场状态</span></div><div id="change-list" class="stack-list"></div></div>
         </div>
       </section>
 
       <section class="view" id="view-repairs">
-        <div class="page-title"><div><p class="eyebrow" id="repair-eyebrow">报修 · 抢单维修 · 验收结单</p><h1 id="repair-title">维修工单</h1></div><button class="secondary" data-refresh="repairs">刷新</button></div>
+        <div class="page-title"><div><p class="eyebrow" id="repair-eyebrow">报修 · 抢单维修 · 技术员结单 · 报修人评价</p><h1 id="repair-title">维修工单</h1></div><button class="secondary" data-refresh="repairs">刷新</button></div>
         <div class="split narrow-left" id="repair-layout">
           <form class="card form-card" id="repair-form">
             <h2>提交报修</h2>
@@ -187,8 +195,67 @@
         </div>
       </section>
 
+      <section class="view" id="view-inspection">
+        <div class="page-title"><div><p class="eyebrow">按模板逐项检查 · 异常闭环</p><h1>结构化点检</h1></div><button class="secondary" data-refresh="inspection">刷新</button></div>
+        <div class="task-module" data-task-kind="inspection">
+          <div class="split narrow-left">
+            <div class="card form-card task-admin-panel" data-min-level="3">
+              <h2>点检模板与计划</h2>
+              <form data-task-template-form>
+                <label>模板名称<input name="name" required placeholder="例如：挤出机每日点检"></label>
+                <label>检查项目（每行一项）<textarea name="items_text" rows="5" required placeholder="机身有无异响|CHECK|运行平稳&#10;主轴温度|NUMBER|≤80℃|℃|0|80|拍照"></textarea></label>
+                <p class="hint">格式：名称｜CHECK/NUMBER/TEXT｜标准｜单位｜最小值｜最大值｜失败拍照。</p>
+                <button>保存模板</button>
+              </form>
+              <hr>
+              <form data-task-plan-form>
+                <label>计划名称<input name="name" required></label>
+                <label>模板<select name="template_id" data-task-template-select required></select></label>
+                <label>对象类型<select name="target_type" data-task-target-type><option value="PROCESS">工序</option><option value="EQUIPMENT">设备</option></select></label>
+                <label>检查对象<select name="target_id" data-task-target-select required></select></label>
+                <label>周期<select name="schedule_type"><option value="DAILY">每天</option><option value="WEEKLY">每周</option><option value="INTERVAL">间隔天数</option><option value="FIXED">固定一次</option><option value="MANUAL">仅手工下发</option></select></label>
+                <div class="form-row"><label>间隔天数<input type="number" min="1" name="interval_days"></label><label>首次到期<input type="datetime-local" name="next_due_at"></label></div>
+                <label>执行人<select name="assignee_user_id" data-task-assignee></select></label>
+                <button>启用计划</button>
+              </form>
+            </div>
+            <div class="card table-card"><div class="card-head"><h2>点检任务</h2><span class="pill" data-task-count></span></div><div class="stack-list" data-task-list></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-maintenance">
+        <div class="page-title"><div><p class="eyebrow">一二三级保养 · 周期到期提醒</p><h1>设备保养</h1></div><button class="secondary" data-refresh="maintenance">刷新</button></div>
+        <div class="task-module" data-task-kind="maintenance">
+          <div class="split narrow-left">
+            <div class="card form-card task-admin-panel" data-min-level="3">
+              <h2>保养模板与计划</h2>
+              <form data-task-template-form>
+                <label>模板名称<input name="name" required placeholder="例如：挤出机一级保养"></label>
+                <label>保养级别<select name="maintenance_level"><option value="1">一级</option><option value="2">二级</option><option value="3">三级</option></select></label>
+                <label>保养项目（每行一项）<textarea name="items_text" rows="5" required placeholder="清洁设备表面|CHECK|无积尘油污&#10;更换润滑油|TEXT|填写油品和用量"></textarea></label>
+                <p class="hint">格式：名称｜CHECK/NUMBER/TEXT｜标准｜单位｜最小值｜最大值｜失败拍照。</p>
+                <button>保存模板</button>
+              </form>
+              <hr>
+              <form data-task-plan-form>
+                <label>计划名称<input name="name" required></label>
+                <label>模板<select name="template_id" data-task-template-select required></select></label>
+                <label>对象类型<select name="target_type" data-task-target-type><option value="EQUIPMENT">设备</option><option value="PROCESS">工序</option></select></label>
+                <label>保养对象<select name="target_id" data-task-target-select required></select></label>
+                <label>周期<select name="schedule_type"><option value="INTERVAL">间隔天数</option><option value="WEEKLY">每周</option><option value="DAILY">每天</option><option value="FIXED">固定一次</option><option value="MANUAL">仅手工下发</option></select></label>
+                <div class="form-row"><label>间隔天数<input type="number" min="1" name="interval_days" value="30"></label><label>首次到期<input type="datetime-local" name="next_due_at"></label></div>
+                <label>执行人<select name="assignee_user_id" data-task-assignee></select></label>
+                <button>启用计划</button>
+              </form>
+            </div>
+            <div class="card table-card"><div class="card-head"><h2>保养任务</h2><span class="pill" data-task-count></span></div><div class="stack-list" data-task-list></div></div>
+          </div>
+        </div>
+      </section>
+
       <section class="view" id="view-fault-codes">
-        <div class="page-title"><div><p class="eyebrow">故障类别 → 故障部位 → 故障现象</p><h1>故障代码</h1></div><div class="toolbar"><button id="add-fault-code">新增故障代码</button><button class="secondary" data-refresh="fault-codes">刷新</button></div></div>
+        <div class="page-title"><div><p class="eyebrow">故障类别 → 故障部位 → 故障现象</p><h1>故障代码</h1></div><div class="toolbar" data-mobile-toolbar="故障代码操作"><button id="add-fault-code" data-mobile-primary>新增故障代码</button><button class="secondary" data-refresh="fault-codes" data-mobile-overflow>刷新</button></div></div>
         <div class="card seeded-notice" id="fault-seeded-notice" hidden>
           <strong>系统预置，待设备科确认</strong>
           <p>下面标着「待确认」的故障代码是参考旧系统整理的建议值，不是现场确认过的标准。请设备科核对后增删修改——报修人只能从这个列表里选，列表不准会直接影响故障统计。</p>
@@ -197,11 +264,11 @@
       </section>
 
       <section class="view" id="view-members">
-        <div class="page-title"><div><p class="eyebrow">普工报修 · 技术员维修 · 管理员验收</p><h1>成员管理</h1></div><div class="toolbar"><button id="add-member">新增成员</button><button class="secondary" data-refresh="members">刷新</button></div></div>
+        <div class="page-title"><div><p class="eyebrow">普工报修 · 技术员维修 · 管理员验收</p><h1>成员管理</h1></div><div class="toolbar" data-mobile-toolbar="成员管理操作"><button id="add-member" data-mobile-primary>新增成员</button><button class="secondary" data-refresh="members" data-mobile-overflow>刷新</button></div></div>
         <div class="card level-guide">
           <div><span class="level-badge level-1">一级</span><strong>普工</strong><p>扫码或选工序报修，查看自己报修的工单进度。</p></div>
-          <div><span class="level-badge level-2">二级</span><strong>技术员</strong><p>在待接单池抢单，处理维修全过程并记录零件；不能自行结单。</p></div>
-          <div><span class="level-badge level-3">三级</span><strong>管理员</strong><p>验收结单、设备台账、产线组合、变动审核与成员管理。</p></div>
+          <div><span class="level-badge level-2">二级</span><strong>技术员</strong><p>抢单、维修、试运行并直接结单；执行点检和保养任务。</p></div>
+          <div><span class="level-badge level-3">三级</span><strong>管理员</strong><p>设备台账、产线组合、模板计划、报表与成员管理。</p></div>
         </div>
         <div class="card table-card"><div class="card-head"><h2>成员清单</h2><span id="member-count" class="pill"></span></div><div class="table-wrap"><table><thead><tr><th>工号</th><th>姓名</th><th>级别</th><th>状态</th><th>最近活动</th><th>操作</th></tr></thead><tbody id="member-body"></tbody></table></div></div>
       </section>
@@ -210,8 +277,27 @@
         <div class="page-title"><div><p class="eyebrow">不可省略的追溯链</p><h1>操作审计日志</h1></div><button class="secondary" data-refresh="logs">刷新</button></div>
         <div class="card table-card"><div class="table-wrap"><table><thead><tr><th>时间</th><th>操作人</th><th>对象</th><th>动作</th><th>记录编号</th></tr></thead><tbody id="audit-body"></tbody></table></div></div>
       </section>
+
+      <section class="view" id="view-reports">
+        <div class="page-title"><div><p class="eyebrow">维修 · 停机 · 点检 · 保养</p><h1>运营报表</h1></div><div class="toolbar" data-mobile-toolbar="运营报表操作"><label data-mobile-primary>开始<input type="date" id="report-start"></label><label data-mobile-primary>结束<input type="date" id="report-end"></label><button id="load-report" data-mobile-primary>查询</button><a class="button-link" id="export-report" href="/api/reports/operations.xlsx" data-mobile-overflow download>导出Excel</a></div></div>
+        <div class="metrics" id="report-metrics"></div>
+        <div class="split">
+          <div class="card table-card"><div class="card-head"><h2>故障排行</h2></div><div class="table-wrap"><table><thead><tr><th>故障</th><th>次数</th><th>停机分钟</th></tr></thead><tbody id="report-faults"></tbody></table></div></div>
+          <div class="card table-card"><div class="card-head"><h2>设备故障排行</h2></div><div class="table-wrap"><table><thead><tr><th>设备</th><th>次数</th><th>停机分钟</th></tr></thead><tbody id="report-equipment"></tbody></table></div></div>
+        </div>
+        <div class="card table-card" style="margin-top:16px"><div class="card-head"><h2>点检保养达成</h2></div><div class="table-wrap"><table><thead><tr><th>类型</th><th>应执行</th><th>已执行</th><th>异常</th><th>逾期</th></tr></thead><tbody id="report-tasks"></tbody></table></div></div>
+      </section>
     </main>
   </div>
+
+  <footer class="legal-footer" id="legal-footer">
+    <span id="legal-company">优胜美</span>
+    <span id="legal-contact"></span>
+    <a id="legal-privacy" hidden target="_blank" rel="noopener">隐私规则</a>
+    <span id="legal-icp"></span>
+    <span id="legal-security"></span>
+    <span id="legal-app-record"></span>
+  </footer>
 
   <button class="native-scan-button" id="native-scan-button" type="button" hidden aria-label="扫描设备铭牌">
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -219,6 +305,44 @@
     </svg>
     <span>扫码</span>
   </button>
+
+  <div class="mobile-action-sheet" id="mobile-action-sheet" hidden
+    role="dialog" aria-modal="true" aria-labelledby="mobile-action-title">
+    <button class="mobile-action-backdrop" type="button" data-close-mobile-actions
+      aria-label="关闭操作菜单"></button>
+    <section class="mobile-action-panel">
+      <div class="mobile-action-head">
+        <div><p class="eyebrow">可用操作</p><h2 id="mobile-action-title">更多操作</h2></div>
+        <button class="mobile-action-close" type="button" data-close-mobile-actions
+          aria-label="关闭">×</button>
+      </div>
+      <div class="mobile-action-list" id="mobile-action-list"></div>
+    </section>
+  </div>
+
+  <div class="drawer server-settings-drawer" id="server-settings-drawer" hidden>
+    <div class="drawer-backdrop" data-close-server-settings></div>
+    <div class="drawer-panel">
+      <button class="drawer-close" type="button" data-close-server-settings aria-label="关闭">×</button>
+      <p class="eyebrow">APP 连接配置</p>
+      <h2>服务器地址</h2>
+      <p class="hint">这里配置的是后端入口，不是 8.8.8.8 这类 DNS 解析器。上云后填写 HTTPS 域名即可。</p>
+      <form class="form-card server-settings-form" id="server-settings-form">
+        <label>服务器根地址
+          <input id="server-url" name="server_url" type="text" inputmode="url"
+            autocomplete="url" autocapitalize="none" spellcheck="false"
+            placeholder="https://equipment.example.com" required>
+        </label>
+        <p class="hint" id="server-default-url"></p>
+        <p class="server-test-status" id="server-test-status" role="status"></p>
+        <div class="server-settings-actions">
+          <button class="secondary" id="test-server-connection" type="button">测试连接</button>
+          <button type="submit">保存并重新连接</button>
+        </div>
+        <button class="secondary" id="reset-server-url" type="button">恢复安装包默认地址</button>
+      </form>
+    </div>
+  </div>
 
   <template id="metric-template"><article class="metric card"><span></span><strong></strong><small></small></article></template>
   <script src="/scanner-utils.js"></script>

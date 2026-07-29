@@ -249,12 +249,78 @@ async function compositionExportBuffer(rows) {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
+async function operationalReportBuffer(report) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = '优胜美生产设备系统';
+  workbook.created = new Date();
+
+  const summary = workbook.addWorksheet('汇总');
+  summary.columns = [
+    { header: '指标', key: 'metric', width: 28 },
+    { header: '数值', key: 'value', width: 18 },
+  ];
+  summary.addRows([
+    { metric: '开始时间', value: report.range.start },
+    { metric: '结束时间', value: report.range.end },
+    { metric: '报修工单数', value: Number(report.totals.work_orders || 0) },
+    { metric: '已完成工单数', value: Number(report.totals.completed || 0) },
+    { metric: '停机工单数', value: Number(report.totals.downtime_orders || 0) },
+    { metric: '平均响应分钟', value: report.totals.avg_response_minutes },
+    { metric: '平均维修分钟', value: report.totals.avg_repair_minutes },
+    { metric: '停机分钟合计', value: Number(report.totals.downtime_minutes || 0) },
+    { metric: '重复报修数', value: Number(report.totals.repeat_repairs || 0) },
+  ]);
+
+  const addSheet = (name, columns, rows) => {
+    const sheet = workbook.addWorksheet(name);
+    sheet.columns = columns;
+    sheet.views = [{ state: 'frozen', ySplit: 1 }];
+    sheet.autoFilter = { from: 'A1', to: `${columnLetter(columns.length)}1` };
+    sheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E78' } };
+    rows.forEach((row) => sheet.addRow(row));
+  };
+  addSheet('故障排行', [
+    { header: '故障编码', key: 'code', width: 18 },
+    { header: '类别', key: 'category', width: 16 },
+    { header: '部位', key: 'part', width: 18 },
+    { header: '现象', key: 'symptom', width: 30 },
+    { header: '次数', key: 'count', width: 10 },
+    { header: '停机分钟', key: 'downtime_minutes', width: 14 },
+  ], report.faults);
+  addSheet('设备故障排行', [
+    { header: '设备编码', key: 'code', width: 20 },
+    { header: '设备名称', key: 'standard_name', width: 24 },
+    { header: '故障次数', key: 'fault_count', width: 12 },
+    { header: '停机分钟', key: 'downtime_minutes', width: 14 },
+  ], report.equipment);
+  addSheet('技术员绩效', [
+    { header: '技术员', key: 'technician', width: 18 },
+    { header: '接单数', key: 'assigned_count', width: 12 },
+    { header: '完成数', key: 'completed_count', width: 12 },
+    { header: '平均维修分钟', key: 'avg_repair_minutes', width: 16 },
+  ], report.technicians);
+  addSheet('点检保养达成', [
+    { header: '任务类型', key: 'task_kind', width: 16 },
+    { header: '应执行', key: 'due_count', width: 12 },
+    { header: '已执行', key: 'executed_count', width: 12 },
+    { header: '异常', key: 'abnormal_count', width: 12 },
+    { header: '逾期', key: 'overdue_count', width: 12 },
+  ], report.tasks);
+  for (const sheet of workbook.worksheets) {
+    sheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E78' } };
+  }
+  return Buffer.from(await workbook.xlsx.writeBuffer());
+}
+
 module.exports = {
   COMPOSITION_COLUMNS,
   EQUIPMENT_COLUMNS,
   compositionExportBuffer,
   compositionTemplateBuffer,
   equipmentTemplateBuffer,
+  operationalReportBuffer,
   parseCompositionWorkbook,
   parseEquipmentWorkbook,
 };

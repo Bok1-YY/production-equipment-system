@@ -2,6 +2,7 @@ package com.ysm.equipment.mobiletest;
 
 import android.content.Intent;
 import android.os.Bundle;
+import com.getcapacitor.CapConfig;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
@@ -10,6 +11,28 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(RepairNotificationsPlugin.class);
+        registerPlugin(ServerSettingsPlugin.class);
+        CapConfig packaged = CapConfig.loadDefault(this);
+        config = new CapConfig.Builder(this)
+            .setHTML5mode(packaged.isHTML5Mode())
+            .setServerUrl(ServerSettings.effectiveUrl(this))
+            .setErrorPath(packaged.getErrorPath())
+            .setHostname(packaged.getHostname())
+            .setStartPath(packaged.getStartPath())
+            .setAndroidScheme(packaged.getAndroidScheme())
+            .setAllowNavigation(packaged.getAllowNavigation())
+            .setOverriddenUserAgentString(packaged.getOverriddenUserAgentString())
+            .setAppendedUserAgentString(packaged.getAppendedUserAgentString())
+            .setBackgroundColor(packaged.getBackgroundColor())
+            .setAllowMixedContent(packaged.isMixedContentAllowed())
+            .setCaptureInput(packaged.isInputCaptured())
+            .setUseLegacyBridge(packaged.isUsingLegacyBridge())
+            .setResolveServiceWorkerRequests(packaged.isResolveServiceWorkerRequests())
+            .setWebContentsDebuggingEnabled(packaged.isWebContentsDebuggingEnabled())
+            .setZoomableWebView(packaged.isZoomableWebView())
+            .setLoggingEnabled(packaged.isLoggingEnabled())
+            .setInitialFocus(packaged.isInitialFocus())
+            .create();
         super.onCreate(savedInstanceState);
         rememberNotificationIntent(getIntent());
     }

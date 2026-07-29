@@ -34,6 +34,17 @@ npm start
 
 首次登录必须修改密码。公开网络或生产部署前，还应配置 HTTPS、正式身份认证、安全备份及 `YSM_SECURE_COOKIE=1`；不要直接将默认配置暴露到公网。
 
+## 在线个人验证
+
+当前个人验证服务器：
+
+- Web：<http://8.136.107.181:8788>
+- Android APK：<http://8.136.107.181:8788/downloads/ysm-equipment-mobile-test.apk>
+
+该地址是临时的公网 HTTP 测试环境，可能因免费 ECS 到期、重启或测试数据重置而停止，不用于工厂正式数据。
+
+仓库同时提交了一份可复现的[公开演示数据库与测试附件](equipment-system/demo-data/README.md)。公开快照已经清除会话和设备令牌，三个演示账号统一使用密码 `ysm-demo-2026!`。
+
 常用环境变量：
 
 | 变量 | 默认值 | 用途 |

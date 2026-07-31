@@ -1,21 +1,102 @@
-# Production Equipment System
+<div align="center">
 
-一套面向生产现场的设备管理系统，覆盖设备编码建档、产线组合、扫码报修、维修工单、巡检、服务评价和审计追踪，并提供 Web 界面与 Android 局域网测试端。
+  # 🏭 Production Equipment System
 
-项目采用轻量技术栈：Node.js 内置 HTTP 与 SQLite、原生 HTML/CSS/JavaScript，以及 Capacitor Android 壳。适合单机试点、业务验证和二次开发。
+  **面向工厂现场的设备全生命周期与维修闭环系统**
 
-## 主要功能
+  永久设备编码 · 产线组合追溯 · 扫码报修 · 维修工单 · 点检保养 · Android
 
-- 三级成员权限：普工、技术员、管理员；
-- 永久设备编码、台账、Excel 批量导入和二维码铭牌；
-- 车间—产线—工序—机位—设备组合树及历史时点还原；
-- 报修、接单、到场、维修、试运行、结单和评价闭环；
-- 设备巡检、附件上传、设备履历和全操作审计；
-- Android 相机扫码及厂区 Wi-Fi 内的待接单通知。
+  [![License: MIT](https://img.shields.io/badge/license-MIT-2f6f61.svg)](./LICENSE)
+  [![Node.js 22.5+](https://img.shields.io/badge/Node.js-22.5%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+  [![SQLite](https://img.shields.io/badge/SQLite-built--in-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+  [![Android 8+](https://img.shields.io/badge/Android-8%2B-3DDC84?logo=android&logoColor=white)](./equipment-system/mobile)
+  [![Zero Framework UI](https://img.shields.io/badge/Web_UI-zero_framework-5b6573.svg)](./equipment-system/web)
+
+  [在线演示](http://8.136.107.181:8788) ·
+  [Android 测试包](http://8.136.107.181:8788/downloads/ysm-equipment-mobile-test.apk) ·
+  [快速开始](#快速开始) ·
+  [业务手册](./equipment-system/README.md) ·
+  [生产部署](./正式上云Docker部署执行手册.md)
+
+</div>
+
+---
+
+## 项目定位
+
+这不是一张只能记录“设备名称和状态”的电子台账，而是一套围绕生产现场真实动作设计的设备管理系统：
+
+```text
+设备建档与永久编码
+        ↓
+车间 / 产线 / 工序 / 机位组合
+        ↓
+扫码报修 → 接单 → 到场 → 维修 → 试运行 → 结单 → 评价
+        ↓
+巡检 / 点检 / 保养 / 异常转维修
+        ↓
+设备履历 / 停机分析 / 服务评价 / 运营报表 / 审计追踪
+```
+
+系统尤其重视三件事：
+
+- **设备身份不随位置变化**：设备使用永久编码，搬线、换机和报废都不会改变或复用身份。
+- **产线组合可以回到任意历史时点**：安装关系使用时间区间保存，不只记录“现在放在哪里”。
+- **一线操作尽量简单，管理数据仍然完整**：普工扫码后说一句话即可报修，技术员到场后补齐诊断、故障代码和维修方法。
+
+## 核心能力
+
+| 模块 | 能力 |
+|---|---|
+| **设备台账** | 按“设备类型 + 关键规格”自动生成永久编码，支持 Excel 整批导入、状态管理、二维码铭牌和完整履历。 |
+| **产线组合** | 建模工厂—车间—产线—工序—机位—设备关系，支持安装、移动、拆除、替换、双人复核和历史时点还原。 |
+| **扫码报修** | 普工扫码或分级搜索设备，一句话报修；系统自动带出工序、记录照片并联动设备状态。 |
+| **维修闭环** | 待接单、已接单、已到场、维修中、待试运行、已完成全流程，记录响应时间、维修时间、零件与返修关系。 |
+| **巡检与计划任务** | 支持设备巡检、结构化点检、一/二/三级保养模板、周期计划、到期任务和异常转维修。 |
+| **三级权限** | 普工、技术员、管理员拥有不同数据视野和操作权限；全部权限在服务端校验。 |
+| **评价与报表** | 报修人对技术员服务评分，管理端查看故障、设备、技术员、停机、点检保养等运营指标并导出 Excel。 |
+| **审计与安全** | scrypt 密码哈希、一次性初始密码、会话撤销、登录限流、Origin/Host 校验、全操作审计。 |
+| **Android 现场端** | Capacitor Android 壳支持相机扫码、拍照、服务器切换以及厂区 Wi-Fi 内的待接单通知。 |
+| **生产运维** | Docker Compose + Caddy HTTPS、SQLite 一致性备份、附件归档、SHA-256 校验、恢复和上线前检查。 |
+
+## 在线演示
+
+当前提供一套临时个人验证环境：
+
+- Web：<http://8.136.107.181:8788>
+- Android APK：<http://8.136.107.181:8788/downloads/ysm-equipment-mobile-test.apk>
+
+| 角色 | 工号 | 密码 |
+|---|---|---|
+| 三级管理员 | `admin` | `ysm-demo-2026!` |
+| 二级技术员 | `w002` | `ysm-demo-2026!` |
+| 一级普工 | `w001` | `ysm-demo-2026!` |
+
+> 这是临时公网 HTTP 演示，不用于工厂正式数据，可能因服务器到期、重启或数据重置而停止。请勿在演示环境输入真实人员、设备、照片或密码。
+
+仓库内还提供已清除会话、设备令牌和登录锁定信息的[演示数据库与测试附件](./equipment-system/demo-data/README.md)，可以在本地复现相同数据状态。
 
 ## 快速开始
 
-要求 Node.js 22.5 或更高版本。
+### 环境要求
+
+- Node.js 22.5 或更高版本；系统使用 Node 内置 `node:sqlite`
+- npm
+- 可选：Android Studio / Android SDK / JDK 21，用于构建 Android 测试端
+
+运行期只有两个第三方依赖：`exceljs` 用于 Excel 导入导出，`qrcode` 用于设备与工序二维码。
+
+### Windows
+
+```powershell
+git clone https://github.com/Bok1-YY/production-equipment-system.git
+cd production-equipment-system\equipment-system
+npm ci
+```
+
+随后双击 `start-windows.bat`，浏览器会自动打开 <http://127.0.0.1:8787>。关闭启动窗口或双击 `stop-windows.bat` 即可停止。
+
+### Linux / macOS
 
 ```bash
 git clone https://github.com/Bok1-YY/production-equipment-system.git
@@ -24,89 +105,230 @@ npm ci
 npm start
 ```
 
-浏览器访问 <http://127.0.0.1:8787>。
+开发模式：
 
-首次启动会创建测试管理员：
+```bash
+npm run dev
+```
+
+健康检查：
+
+```text
+GET http://127.0.0.1:8787/api/health
+```
+
+### 首次登录
+
+首次启动会创建本地管理员：
 
 | 工号 | 初始密码 |
 |---|---|
 | `admin` | `ysm-admin-2026` |
 
-首次登录必须修改密码。公开网络或生产部署前，还应配置 HTTPS、正式身份认证、安全备份及 `YSM_SECURE_COOKIE=1`；不要直接将默认配置暴露到公网。
+初始密码只能使用一次。登录后必须立即修改密码，再创建实际管理员、技术员与普工账号。不要把这个本地默认密码用于公网部署。
 
-## 在线个人验证
+## 角色与维修流程
 
-当前个人验证服务器：
-
-- Web：<http://8.136.107.181:8788>
-- Android APK：<http://8.136.107.181:8788/downloads/ysm-equipment-mobile-test.apk>
-
-该地址是临时的公网 HTTP 测试环境，可能因免费 ECS 到期、重启或测试数据重置而停止，不用于工厂正式数据。
-
-仓库同时提交了一份可复现的[公开演示数据库与测试附件](equipment-system/demo-data/README.md)。公开快照已经清除会话和设备令牌，三个演示账号统一使用密码 `ysm-demo-2026!`。
-
-常用环境变量：
-
-| 变量 | 默认值 | 用途 |
+| 角色 | 现场职责 | 数据范围 |
 |---|---|---|
-| `HOST` | `127.0.0.1` | 服务监听地址 |
-| `PORT` | `8787` | 服务端口 |
-| `YSM_DB_PATH` | `data/equipment.db` | SQLite 数据库路径 |
-| `PUBLIC_BASE_URL` | 从请求推导 | 设备铭牌二维码的公开访问地址 |
-| `YSM_SECURE_COOKIE` | 未启用 | 设为 `1` 后仅通过 HTTPS 发送会话 Cookie |
+| **一级普工** | 扫码报修、撤回到场前的误报、查看本人报修、评价服务、重新报修 | 只能查看自己的工单 |
+| **二级技术员** | 抢单、到场、诊断、维修、试运行、结单、巡检和执行点检保养 | 自己负责的工单；台账和产线只读 |
+| **三级管理员** | 台账、产线、设备变动复核、派单转派、计划模板、故障码、成员、报表和审计 | 全部管理数据 |
 
-## 测试
-
-```bash
-cd equipment-system
-npm test
+```text
+普工报修
+   ↓
+待接单 ── 技术员抢单 / 管理员指派
+   ↓
+已接单 ── 到场前仍可由报修人撤回
+   ↓
+已到场 ── 解锁设备修正、故障分类、诊断和零件记录
+   ↓
+维修中 ── 可记录等件 / 外协
+   ↓
+待试运行 ── 检查设备、故障码、诊断、维修方法和试运行结果
+   ↓
+技术员结单 ── 报修人评价 / 未修好可关联重新报修
 ```
 
-测试覆盖身份与权限、设备编码和状态、产线组合、附件、巡检、报修状态机、评价、时长统计、二维码扫描及 Excel 模板。
+“谁接单谁推进”由后端强制执行；需要换人时由管理员转派并留下历史。接单、到场、开始维修与完成分别记录时间，响应时间和实际维修时间不会混在一起。
 
-## Android 局域网测试端
+## 永久编码与产线组合
 
-Android 端是连接电脑服务的 Capacitor 测试壳，不包含离线同步或公网推送。电脑和手机必须连接同一个可信 Wi-Fi。
-App 顶部“服务器”可以手动修改后端根地址，后端不可达时也能从离线页修改。测试包允许
-`http://私网IP:端口`，正式包只接受 `https://域名`；这项配置不是公共 DNS 解析器地址。
+设备编码示例：
 
-在仓库根目录运行：
+```text
+YSM-EXT-135-0001
+YSM-MIX-H800-C2500-0001
+YSM-PUL-0001
+```
+
+流水按“类型代码 + 关键规格”分别维护。设备换车间、换产线或换机位时，编码保持不变；作废编号不重新发放。
+
+位置结构采用五级模型：
+
+```text
+工厂 → 车间 → 产线 → 工序 → 机位 → 当前设备
+```
+
+安装、移动、拆除和替换必须先提交，再由另一名管理员复核。系统保存设备与机位的起止时间，因此能够还原任意日期的产线设备组合。
+
+> 批量打印设备铭牌前必须先配置 `PUBLIC_BASE_URL`。二维码中保存的是访问系统的地址；如果仍是 `127.0.0.1`，手机扫码将无法打开。
+
+## Android 现场端
+
+Android 测试端面向厂区局域网使用：
+
+- 相机扫描设备或工序二维码；
+- 普工扫码后直接进入报修；
+- 技术员和管理员可选择巡检或报修；
+- 支持现场拍照和服务器地址切换；
+- 技术员在厂区 Wi-Fi 内轮询待接单任务，并显示通知与桌面角标；
+- 最低支持 Android 8。
+
+在仓库根目录使用 Git Bash、WSL 或 Linux 执行：
 
 ```bash
 ./一键打包安卓测试版.sh
 ```
 
-脚本会优先选择真实的 `10.*`、`172.16-31.*` 或 `192.168.*` Wi‑Fi 地址，排除 Mihomo/Clash 的 `198.18.*` 虚拟网卡。每次都会先运行后端全量测试与真实浏览器冒烟，再运行 Android 单元测试和 lint、构建并校验 APK、重启端口 `8788` 的当前后端，并核对网页、安装页、APK 下载以及 APK 内嵌地址。连接了 USB 调试手机时，还会自动运行仪器测试、覆盖安装并启动 App。结果写入 `安装包/最近一次联调报告.txt`。
+脚本会依次执行后端测试、真实浏览器冒烟、Android 单元测试与 lint、APK 构建和下载链路校验；连接 USB 调试手机时还会运行仪器测试、覆盖安装并启动 App。详细步骤见[手机测试说明](./手机测试说明.md)。
 
-首次运行需要接受 Android SDK 许可并下载相关工具。生成的 APK、二维码、数据库、报告和日志均不会提交到 Git。
+> 局域网测试包允许私网 HTTP，仅适合可信 Wi-Fi。正式 Android 包强制使用 HTTPS；当前版本不包含离线同步或公网推送。
 
-完整测试说明见 [手机测试说明.md](手机测试说明.md)。
+## 生产部署
 
-## 项目结构
+仓库提供 Docker Compose 与 Caddy 配置，目标规模为 50–200 个账号、约 30 人并发的单工厂实例：
+
+```mermaid
+flowchart LR
+    CLIENT["浏览器 / Android"]
+    CADDY["Caddy<br/>HTTPS · 安全响应头"]
+    APP["Node.js 单实例<br/>HTTP · 业务服务"]
+    DATA["持久卷<br/>SQLite · 附件"]
+    BACKUP["异机备份<br/>SHA-256 校验"]
+
+    CLIENT -->|HTTPS| CADDY
+    CADDY --> APP
+    APP --> DATA
+    DATA --> BACKUP
+```
+
+关键约束：
+
+- App 固定为单写实例，不横向启动多个 SQLite 写入副本；
+- 数据库与附件挂载到宿主机 `/srv/ysm/data`，不写进镜像；
+- App 端口只在 Docker 网络内可见，由 Caddy 对外提供 HTTPS；
+- 正式环境启用 Secure Cookie、可信 Origin、登录限流和每日一致性备份；
+- 上线前必须完成备份恢复演练和三角色验收。
+
+请按[正式上云 Docker 部署执行手册](./正式上云Docker部署执行手册.md)逐项执行，不要跳过备份、备案、安全检查或回滚演练。
+
+## 配置
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `HOST` | `127.0.0.1` | 服务监听地址；手机访问时需使用可信网络并改为 `0.0.0.0` |
+| `PORT` | `8787` | HTTP 服务端口 |
+| `YSM_DB_PATH` | `data/equipment.db` | SQLite 数据库路径 |
+| `PUBLIC_BASE_URL` | 从请求推导 | 写入设备和工序二维码的访问根地址 |
+| `YSM_SECURE_COOKIE` | 未启用 | HTTPS 环境设为 `1` |
+| `YSM_TRUSTED_ORIGIN` | 未设置 | 正式站点允许的浏览器 Origin |
+| `YSM_TRUST_PROXY` | 未启用 | 位于可信反向代理后时设为 `1` |
+
+完整生产参数见 [`equipment-system/.env.production.example`](./equipment-system/.env.production.example)。
+
+## 架构
+
+```mermaid
+flowchart TD
+    WEB["原生 Web UI<br/>HTML · CSS · JavaScript"]
+    MOBILE["Capacitor Android<br/>扫码 · 拍照 · 通知"]
+    SERVER["Node.js 内置 HTTP<br/>路由 · 会话 · 静态文件"]
+    SERVICE["EquipmentService<br/>业务规则 · 权限 · 状态机"]
+    DB["node:sqlite<br/>WAL · 单文件数据库"]
+    FILES["附件目录<br/>现场照片"]
+
+    WEB --> SERVER
+    MOBILE --> SERVER
+    SERVER --> SERVICE
+    SERVICE --> DB
+    SERVICE --> FILES
+```
+
+- 前端无框架、无构建步骤，服务端直接提供静态文件。
+- HTTP 与 SQLite 均使用 Node 标准库，减少工厂电脑上的安装和维护成本。
+- 业务逻辑集中在 `src/service.js`，服务端权限是唯一安全边界。
+- SQLite 使用 WAL；正式环境保持单 App 实例。
+
+<details>
+<summary><strong>项目结构</strong></summary>
 
 ```text
 .
 ├── equipment-system/
-│   ├── src/                # Node.js 服务与业务逻辑
-│   ├── web/                # 原生 Web 前端
-│   ├── mobile/             # Capacitor Android 测试端
-│   ├── test/               # Node.js 测试
-│   ├── scripts/            # 模板与数据处理脚本
-│   ├── docs/               # 业务规则文档
-│   └── 导入模板/           # 通用 Excel 导入模板
+│   ├── src/                    # Node.js 服务、业务规则、认证与 SQLite
+│   ├── web/                    # 零框架响应式 Web 前端
+│   ├── mobile/                 # Capacitor Android 项目
+│   ├── test/                   # Node.js 回归与安全测试
+│   ├── scripts/                # 冒烟、备份、恢复、模板与上线检查
+│   ├── deploy/                 # Caddy 生产配置
+│   ├── demo-data/              # 已脱敏的公开演示快照
+│   ├── docs/                   # 设备编码与组合规则
+│   ├── 导入模板/               # 台账和产线组合 XLSX 模板
+│   ├── compose.production.yaml
+│   └── Dockerfile
 ├── 一键打包安卓测试版.sh
 ├── 一键启动手机测试服务.sh
-└── 停止手机测试服务.sh
+├── 停止手机测试服务.sh
+├── 手机测试说明.md
+└── 正式上云Docker部署执行手册.md
 ```
 
-更详细的使用和业务规则见 [系统说明](equipment-system/README.md)，架构、数据模型和开发约定见 [开发手册](equipment-system/DEVGUIDE.md)。
+</details>
+
+## 测试、备份与恢复
+
+```bash
+cd equipment-system
+
+npm test                   # 业务、权限、状态机、附件、导入与 HTTP 安全
+npm run test:browser       # 真实浏览器桌面/移动端冒烟
+npm run test:load          # 负载冒烟
+npm run preflight          # 生产上线前检查
+npm run backup -- /backups
+node scripts/verify-backup.js /backups/<备份目录>
+```
+
+当前测试覆盖设备编码、组合变动、身份权限、照片魔数、扫码解析、维修状态机、评价可见性、点检保养、Excel 导入、登录锁定、幂等和安全响应边界。
+
+生产备份使用 SQLite `VACUUM INTO` 创建一致数据库，并归档附件和生成 SHA-256 清单。不要在服务运行时只复制 `equipment.db`，因为 WAL 中可能仍有未检查点的数据。
+
+## 当前边界
+
+以下能力不在当前阶段范围内：
+
+- 库存自动扣减与采购系统联动；
+- 微信/企业微信身份认证；
+- PLC、传感器或其他 IoT 实时采集；
+- Android 离线同步；
+- 公网推送通知；
+- 多租户 SaaS 与多 App 实例横向扩展。
+
+## 文档
+
+- [系统业务手册](./equipment-system/README.md) — 角色、报修、铭牌、导入、业务规则与首次使用顺序
+- [开发手册](./equipment-system/DEVGUIDE.md) — 架构、数据模型、权限边界和开发约定
+- [设备编码与组合规则](./equipment-system/docs/设备编码与组合规则.md) — 编码、流水、机位和历史组合的规则真源
+- [手机测试说明](./手机测试说明.md) — Android 打包、联调与局域网测试
+- [正式部署手册](./正式上云Docker部署执行手册.md) — Docker、HTTPS、备份、上线和回滚
 
 ## 数据与安全
 
-运行数据库、现场附件、日志、APK、原始设备台账和本机配置均被 `.gitignore` 排除。生产数据应使用独立的文件系统备份，不应提交到版本控制。
+数据库、WAL、现场附件、日志、APK、正式密钥、Android 签名和原始设备资料均不应进入 Git。仓库的 `.gitignore` 已覆盖主要运行产物，但生产环境仍必须使用独立持久卷、异机备份与定期恢复演练。
 
-该 Android 版本使用局域网 HTTP，仅适合可信网络内测试。生产环境应使用 HTTPS 反向代理、稳定域名、正式签名包和完善的访问控制。
+公开演示和局域网 HTTP 测试端都不能承载真实生产数据。正式环境必须使用 HTTPS、稳定域名、正式签名包和受控网络访问。
 
 ## License
 
-[MIT](LICENSE) © 2026 Bok1-YY
+[MIT](./LICENSE) © 2026 Bok1-YY

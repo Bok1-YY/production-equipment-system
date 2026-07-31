@@ -3,14 +3,39 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const { openDatabase, DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME } = require('../src/db');
 const { EquipmentService } = require('../src/service');
 const { createApplication } = require('../src/server');
 const { levelToRole } = require('../src/auth');
 
-const chromePath = process.env.CHROME_BIN || '/usr/bin/google-chrome';
+function browserCandidates() {
+  if (process.platform === 'win32') {
+    return [
+      path.join(process.env.PROGRAMFILES || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      path.join(process.env['PROGRAMFILES(X86)'] || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      path.join(process.env.PROGRAMFILES || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+      path.join(process.env['PROGRAMFILES(X86)'] || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    ];
+  }
+  if (process.platform === 'darwin') {
+    return [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    ];
+  }
+  return [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+  ];
+}
+
+const chromePath = process.env.CHROME_BIN
+  || browserCandidates().find((candidate) => candidate && fs.existsSync(candidate));
 
 function cdpClient(url) {
   const socket = new WebSocket(url);
@@ -65,7 +90,9 @@ async function evaluate(client, expression) {
 }
 
 async function main() {
-  if (!fs.existsSync(chromePath)) throw new Error(`Chrome不存在：${chromePath}`);
+  if (!chromePath || !fs.existsSync(chromePath)) {
+    throw new Error('找不到 Chrome 或 Edge；请安装浏览器，或通过 CHROME_BIN 指定可执行文件。');
+  }
   const db = openDatabase(':memory:');
   const service = new EquipmentService(db);
   const seed = service.listUsers().find((item) => item.username === DEFAULT_ADMIN_USERNAME);
@@ -291,7 +318,19 @@ async function main() {
     );
   } finally {
     client?.close();
-    if (chrome.exitCode === null) {
+    if (process.platform === 'win32' && chrome.exitCode === null) {
+      // Chromium/Edge spawns a process tree on Windows. Killing only the
+      // launcher can leave renderer children holding stderr open, so Node
+      // prints success but never exits. Stop exactly this spawned tree.
+      spawnSync('taskkill.exe', ['/PID', String(chrome.pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      await Promise.race([
+        once(chrome, 'exit'),
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+      ]);
+    } else if (chrome.exitCode === null) {
       chrome.kill('SIGTERM');
       await Promise.race([
         once(chrome, 'exit'),

@@ -7,7 +7,7 @@ const path = require('node:path');
 const { URL } = require('node:url');
 const QRCode = require('qrcode');
 const { openDatabase } = require('./db');
-const { DomainError, POST_ARRIVAL_STATUSES, REVIEW_DIMENSIONS, WITHDRAWABLE_STATUSES,
+const { DomainError, POST_ARRIVAL_STATUSES, REVIEW_DIMENSIONS, TRIAL_RESULTS, WITHDRAWABLE_STATUSES,
   WORK_ORDER_STAGES, WORK_ORDER_TRANSITIONS } = require('./domain');
 const { EquipmentService, ROLES } = require('./service');
 const {
@@ -385,6 +385,7 @@ async function handleApi(request, response, url) {
       work_order_stages: WORK_ORDER_STAGES,
       // 哪些状态算"技术员已到场"。前端按它决定四个操作区块什么时候解锁。
       post_arrival_statuses: POST_ARRIVAL_STATUSES,
+      trial_results: TRIAL_RESULTS,
       review_dimensions: REVIEW_DIMENSIONS,
       change_actions: ['INSTALL', 'MOVE', 'REMOVE', 'REPLACE'],
       // 铭牌界面要照实告诉人"码里烧进去的是这个地址"，没配就挂红色警告。
@@ -638,6 +639,16 @@ async function handleApi(request, response, url) {
       end: url.searchParams.get('end'),
     }, context));
   }
+  if (method === 'GET' && pathname === '/api/reports/operations/work-orders') {
+    return success(response, service.operationalReportWorkOrders({
+      start: url.searchParams.get('start'),
+      end: url.searchParams.get('end'),
+      kind: url.searchParams.get('kind'),
+      line_id: url.searchParams.get('line_id'),
+      category_key: url.searchParams.get('category_key'),
+      equipment_id: url.searchParams.get('equipment_id'),
+    }, context));
+  }
   if (method === 'GET' && pathname === '/api/reports/operations.xlsx') {
     const report = service.operationalReport({
       start: url.searchParams.get('start'),
@@ -667,6 +678,9 @@ async function handleApi(request, response, url) {
   }
   if (method === 'PUT' && (params = match(pathname, /^\/api\/work-orders\/(\d+)\/repair-detail$/))) {
     return success(response, service.updateRepairDetail(params[0], body, context));
+  }
+  if (method === 'PUT' && (params = match(pathname, /^\/api\/work-orders\/(\d+)\/trial-result$/))) {
+    return success(response, service.updateTrialResult(params[0], body, context));
   }
   if (method === 'POST' && (params = match(pathname, /^\/api\/work-orders\/(\d+)\/correct-equipment$/))) {
     return success(response, service.correctWorkOrderEquipment(params[0], body, context));

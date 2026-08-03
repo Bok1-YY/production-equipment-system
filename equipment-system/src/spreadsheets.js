@@ -280,17 +280,22 @@ async function operationalReportBuffer(report) {
     sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E78' } };
     rows.forEach((row) => sheet.addRow(row));
   };
-  addSheet('故障排行', [
-    { header: '故障编码', key: 'code', width: 18 },
-    { header: '类别', key: 'category', width: 16 },
-    { header: '部位', key: 'part', width: 18 },
-    { header: '现象', key: 'symptom', width: 30 },
-    { header: '次数', key: 'count', width: 10 },
+  addSheet('产线故障排行', [
+    { header: '产线编码', key: 'line_code', width: 18 },
+    { header: '产线名称', key: 'line_name', width: 22 },
+    { header: '故障次数', key: 'fault_count', width: 12 },
     { header: '停机分钟', key: 'downtime_minutes', width: 14 },
-  ], report.faults);
+  ], report.lines);
+  addSheet('故障类别排行', [
+    { header: '故障类别', key: 'category', width: 22 },
+    { header: '故障次数', key: 'fault_count', width: 12 },
+    { header: '停机分钟', key: 'downtime_minutes', width: 14 },
+  ], report.fault_categories);
   addSheet('设备故障排行', [
     { header: '设备编码', key: 'code', width: 20 },
     { header: '设备名称', key: 'standard_name', width: 24 },
+    { header: '发生时产线编码', key: 'line_code', width: 18 },
+    { header: '发生时产线名称', key: 'line_name', width: 22 },
     { header: '故障次数', key: 'fault_count', width: 12 },
     { header: '停机分钟', key: 'downtime_minutes', width: 14 },
   ], report.equipment);

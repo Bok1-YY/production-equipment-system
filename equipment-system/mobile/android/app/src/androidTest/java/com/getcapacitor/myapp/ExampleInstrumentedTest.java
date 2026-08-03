@@ -17,7 +17,7 @@ public class ExampleInstrumentedTest {
     @Test
     public void productionSensitiveComponentsAreNotExportedOrBackedUp() throws Exception {
         Context appContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        assertEquals(BuildConfig.APPLICATION_ID, appContext.getPackageName());
+        assertEquals(MainActivity.class.getPackage().getName(), appContext.getPackageName());
         ApplicationInfo applicationInfo = appContext.getApplicationInfo();
         assertEquals(0, applicationInfo.flags & ApplicationInfo.FLAG_ALLOW_BACKUP);
         ServiceInfo serviceInfo = appContext.getPackageManager().getServiceInfo(

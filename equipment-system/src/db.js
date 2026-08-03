@@ -503,6 +503,7 @@ function migrate(db) {
   ensureColumn(db, 'work_orders', 'arrived_at', 'TEXT');
   ensureColumn(db, 'work_orders', 'downtime_is_override', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'work_orders', 'downtime_override_reason', 'TEXT');
+  ensureColumn(db, 'work_orders', 'trial_issue_description', 'TEXT');
   ensureColumn(db, 'sessions', 'absolute_expires_at', 'TEXT');
   ensureColumn(db, 'audit_logs', 'actor_user_id', 'INTEGER REFERENCES users(id)');
   ensureColumn(db, 'audit_logs', 'actor_username', 'TEXT');
@@ -510,6 +511,7 @@ function migrate(db) {
   ensureColumn(db, 'composition_changes', 'reviewed_by_user_id', 'INTEGER REFERENCES users(id)');
   backfillWorkOrderTimestamps(db);
   normalizeMergedWorkOrderStatus(db);
+  mergeDiagnosisAndRootCause(db);
   // 普工报修页"常用故障"快捷按钮上出现哪几条。
   ensureColumn(db, 'fault_codes', 'is_common', 'INTEGER NOT NULL DEFAULT 0');
   backfillCommonFaultCodes(db);
@@ -539,6 +541,30 @@ function migrate(db) {
     INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
     VALUES (2, 'structured-inspection-maintenance-and-scan-audit', ?)
   `).run(now);
+}
+
+// 维修界面只保留一个「诊断原因」。旧库里两个字段都可能有值，迁移时完整合并一次；
+// root_cause 列暂时保留，避免旧版本程序或备份恢复因列缺失而失败。
+function mergeDiagnosisAndRootCause(db) {
+  if (db.prepare('SELECT 1 FROM schema_migrations WHERE version=3').get()) return;
+  transaction(db, () => {
+    const rows = db.prepare(`
+      SELECT id, diagnosis, root_cause FROM work_orders
+      WHERE root_cause IS NOT NULL AND TRIM(root_cause) <> ''
+    `).all();
+    const update = db.prepare('UPDATE work_orders SET diagnosis=?, root_cause=NULL WHERE id=?');
+    for (const row of rows) {
+      const diagnosis = String(row.diagnosis || '').trim();
+      const rootCause = String(row.root_cause || '').trim();
+      const merged = !diagnosis ? rootCause
+        : diagnosis.includes(rootCause) ? diagnosis : `${diagnosis}\n根本原因：${rootCause}`;
+      update.run(merged, row.id);
+    }
+    db.prepare(`
+      INSERT INTO schema_migrations(version, name, applied_at)
+      VALUES (3, 'merge-diagnosis-and-structure-trial-result', ?)
+    `).run(new Date().toISOString());
+  });
 }
 
 // assigned_at / arrived_at 是后加的列，历史工单为 NULL。流转历史里其实记着这两个时刻，

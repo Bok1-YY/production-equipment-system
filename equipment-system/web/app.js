@@ -15,6 +15,9 @@ const state = {
   equipmentTypes: [],
   workOrders: [],
   selectedWorkOrder: null,
+  patrolPhotoEquipmentId: null,
+  activeReviewPhotos: [],
+  adminReviewPhotos: [],
   taskModules: {
     inspection: { templates: [], plans: [], tasks: [] },
     maintenance: { templates: [], plans: [], tasks: [] },
@@ -47,6 +50,17 @@ function statusBadge(status) {
   return `<span class="status ${meta?.tone || ''}">${escapeHtml(meta?.name || status || '—')}</span>`;
 }
 
+function trialResultMeta(value) {
+  return trialResults.find((item) => item.value === value) || null;
+}
+
+function trialResultText(workOrder) {
+  if (!workOrder?.trial_result) return '—';
+  const meta = trialResultMeta(workOrder.trial_result);
+  const label = meta?.name || workOrder.trial_result;
+  return workOrder.trial_issue_description ? `${label}：${workOrder.trial_issue_description}` : label;
+}
+
 function underRepair(status) {
   return status === 'REPORTED' || status === 'REPAIRING';
 }
@@ -71,6 +85,7 @@ const labels = {
   CREATED: '提交报修', CLAIMED: '技术员接单', REASSIGNED: '转派',
   STATUS_CHANGED: '状态流转', REPAIR_DETAIL_UPDATED: '更新维修记录',
   EQUIPMENT_CORRECTED: '修正故障设备', FAULT_CLASSIFIED: '确认故障分类', PART_ADDED: '记录零件',
+  TRIAL_RESULT_UPDATED: '记录试运行结果',
   WITHDRAWN: '报修人撤回', REVIEWED: '报修人评价', REVIEW_UPDATED: '修改评价',
   REOPENED: '重新报修', FROM_PATROL: '由巡检转入',
 };
@@ -82,6 +97,11 @@ let nextStatuses = {};
 // 拿到之前工单详情画不出步骤条（不会报错，只是没有步骤条）。
 let workOrderStages = [];
 let postArrivalStatuses = [];
+let trialResults = [
+  { value: 'NORMAL', name: '正常运行', closable: true },
+  { value: 'OPERABLE_WITH_ISSUES', name: '可运行但仍存在问题', closable: true, requires_description: true },
+  { value: 'UNABLE_TO_RUN', name: '无法运行', closable: false },
+];
 let scannerPlugin = null;
 let scanBusy = false;
 let repairNotificationsPlugin = null;
@@ -156,17 +176,19 @@ function renderPhotoGrid(key) {
   grid.querySelectorAll('[data-photo-remove]').forEach((button) => button.addEventListener('click', () => {
     const [group, position] = button.dataset.photoRemove.split(':');
     state.photos[group].splice(Number(position), 1);
+    if (group === 'patrol' && !state.photos[group].length) state.patrolPhotoEquipmentId = null;
     renderPhotoGrid(group);
     if (group === 'repair') updateFaultTip();
+    if (group === 'patrol') updatePatrolPhotoRequirement();
   }));
 }
 
-async function handlePhotoPick(key, input) {
+async function handlePhotoPick(key, input, reservedCount = 0) {
   const files = [...input.files];
   input.value = '';
   if (!files.length) return;
   const photos = state.photos[key] || (state.photos[key] = []);
-  if (photos.length + files.length > MAX_PHOTOS) return flash(`最多只能上传${MAX_PHOTOS}张照片`, 'error');
+  if (reservedCount + photos.length + files.length > MAX_PHOTOS) return flash(`最多只能上传${MAX_PHOTOS}张照片`, 'error');
   for (const file of files) {
     if (!file.type.startsWith('image/')) { flash(`${file.name} 不是图片`, 'error'); continue; }
     try { photos.push(await compressImage(file)); }
@@ -182,7 +204,213 @@ function takePhotos(key) {
 
 function clearPhotos(key) {
   state.photos[key] = [];
+  if (key === 'patrol') state.patrolPhotoEquipmentId = null;
   renderPhotoGrid(key);
+  if (key === 'patrol') updatePatrolPhotoRequirement();
+}
+
+function updatePatrolPhotoRequirement() {
+  const submit = document.querySelector('#patrol-submit');
+  if (!submit) return;
+  const ready = Boolean((state.photos.patrol || []).length);
+  submit.disabled = !ready;
+  submit.textContent = ready ? '提交巡检记录' : '请先拍一张现场照片';
+}
+
+function patrolWatermarkEquipment() {
+  const id = Number(document.querySelector('#patrol-equipment')?.value || 0);
+  return state.equipment.find((item) => item.id === id) || null;
+}
+
+function finishPatrolWatermark(canvas, equipment) {
+  const context = canvas.getContext('2d');
+  const fontSize = Math.max(18, Math.round(canvas.width * 0.025));
+  const padding = Math.max(14, Math.round(fontSize * 0.7));
+  const lineHeight = Math.round(fontSize * 1.35);
+  const timestamp = new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).format(new Date());
+  const lines = [
+    `${equipment.code} · ${equipment.alias || equipment.standard_name}`,
+    `巡检人：${state.me?.display_name || '未记录'}  拍摄时间：${timestamp}`,
+  ];
+  const boxHeight = padding * 2 + lineHeight * lines.length;
+  context.fillStyle = 'rgba(0, 0, 0, .62)';
+  context.fillRect(0, canvas.height - boxHeight, canvas.width, boxHeight);
+  context.fillStyle = '#fff';
+  context.font = `600 ${fontSize}px sans-serif`;
+  context.textBaseline = 'top';
+  lines.forEach((line, index) => context.fillText(line, padding,
+    canvas.height - boxHeight + padding + index * lineHeight, canvas.width - padding * 2));
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+  return {
+    name: `巡检现场_${equipment.code}_${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`,
+    dataUrl,
+    content_base64: dataUrl.split(',')[1],
+  };
+}
+
+function watermarkedCameraPhoto(video, equipment) {
+  const sourceWidth = video.videoWidth || 1280;
+  const sourceHeight = video.videoHeight || 720;
+  const scale = Math.min(1, PHOTO_MAX_EDGE / Math.max(sourceWidth, sourceHeight));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(sourceWidth * scale);
+  canvas.height = Math.round(sourceHeight * scale);
+  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+  return finishPatrolWatermark(canvas, equipment);
+}
+
+function watermarkedCapturedFile(file, equipment) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, PHOTO_MAX_EDGE / Math.max(image.width, image.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(image.width * scale);
+      canvas.height = Math.round(image.height * scale);
+      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+      resolve(finishPatrolWatermark(canvas, equipment));
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('无法读取刚拍摄的照片，请重新拍摄'));
+    };
+    image.src = url;
+  });
+}
+
+function openPatrolNativeCapture(equipment) {
+  const input = document.querySelector('#patrol-camera-fallback');
+  input.dataset.equipmentId = String(equipment.id);
+  input.value = '';
+  input.click();
+}
+
+function patrolCapacitorCamera() {
+  if (!window.Capacitor?.isNativePlatform?.()) return null;
+  return window.Capacitor?.Plugins?.PatrolCamera || null;
+}
+
+async function capturePatrolPhotoWithApp(equipment) {
+  const camera = patrolCapacitorCamera();
+  if (!camera?.takePhoto) throw new Error('当前安装包不支持现场拍照，请安装最新版安卓应用');
+  const result = await camera.takePhoto();
+  if (!result?.dataUrl?.startsWith('data:image/')) {
+    throw new Error('相机没有返回有效照片，请重新拍摄');
+  }
+  if (Number(document.querySelector('#patrol-equipment')?.value || 0) !== equipment.id) {
+    throw new Error('巡检设备已经改变，请重新拍摄');
+  }
+  const separator = result.dataUrl.indexOf(',');
+  const metadata = result.dataUrl.slice(0, separator);
+  const encoded = result.dataUrl.slice(separator + 1);
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  const mimeType = metadata.match(/^data:([^;]+)/)?.[1] || 'image/jpeg';
+  const blob = new Blob([bytes], { type: mimeType });
+  const file = new File([blob], result.name || `patrol-${Date.now()}.jpg`, { type: blob.type || 'image/jpeg' });
+  const photos = state.photos.patrol || (state.photos.patrol = []);
+  if (photos.length >= MAX_PHOTOS) throw new Error(`最多只能拍摄${MAX_PHOTOS}张照片`);
+  photos.push(await watermarkedCapturedFile(file, equipment));
+  state.patrolPhotoEquipmentId = equipment.id;
+  renderPhotoGrid('patrol');
+  updatePatrolPhotoRequirement();
+}
+
+async function openPatrolCamera() {
+  const equipment = patrolWatermarkEquipment();
+  if (!equipment) return flash('请先选择巡检设备，再打开相机', 'error');
+  if ((state.photos.patrol || []).length >= MAX_PHOTOS) {
+    return flash(`最多只能拍摄${MAX_PHOTOS}张照片`, 'error');
+  }
+  if (window.Capacitor?.isNativePlatform?.()) {
+    try {
+      await capturePatrolPhotoWithApp(equipment);
+    } catch (error) {
+      if (error?.code !== 'CAMERA_CANCELLED') flash(error.message || '现场拍照失败，请重试', 'error');
+    }
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return flash('当前浏览器无法验证现场拍摄，请使用最新版安卓应用巡检', 'error');
+  }
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } }, audio: false,
+    });
+  } catch (error) {
+    const denied = error?.name === 'NotAllowedError' || error?.name === 'SecurityError';
+    if (!denied) return flash('当前浏览器无法打开现场相机，请使用最新版安卓应用巡检', 'error');
+    return flash('没有摄像头权限，请在浏览器设置中允许后重试', 'error');
+  }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'drawer camera-drawer';
+  overlay.innerHTML = `<div class="drawer-backdrop"></div><div class="camera-panel" role="dialog" aria-modal="true" aria-label="巡检现场拍摄">
+    <button type="button" class="drawer-close" aria-label="关闭相机">×</button>
+    <p class="eyebrow">${escapeHtml(equipment.code)} · ${escapeHtml(equipment.alias || equipment.standard_name)}</p>
+    <h2>拍摄巡检现场</h2>
+    <div class="camera-preview"><video autoplay playsinline muted></video></div>
+    <p class="hint">照片将自动写入设备、巡检人和当前时间。请把设备及现场情况拍清楚。</p>
+    <div class="camera-actions"><button type="button" data-camera-capture disabled>拍摄这张</button><button type="button" class="secondary" data-camera-done>完成</button></div>
+    <p class="hint" data-camera-count>已拍${state.photos.patrol.length}张，最多${MAX_PHOTOS}张</p>
+  </div>`;
+  const video = overlay.querySelector('video');
+  const capture = overlay.querySelector('[data-camera-capture]');
+  const count = overlay.querySelector('[data-camera-count]');
+  const stop = () => {
+    stream.getTracks().forEach((track) => track.stop());
+    overlay.remove();
+  };
+  video.srcObject = stream;
+  video.addEventListener('loadedmetadata', () => { capture.disabled = false; }, { once: true });
+  capture.addEventListener('click', () => {
+    if (Number(document.querySelector('#patrol-equipment')?.value || 0) !== equipment.id) {
+      stop();
+      return flash('巡检设备已经改变，请重新打开相机拍摄', 'error');
+    }
+    const photos = state.photos.patrol || (state.photos.patrol = []);
+    if (photos.length >= MAX_PHOTOS) return;
+    photos.push(watermarkedCameraPhoto(video, equipment));
+    state.patrolPhotoEquipmentId = equipment.id;
+    renderPhotoGrid('patrol');
+    updatePatrolPhotoRequirement();
+    count.textContent = `已拍${photos.length}张，最多${MAX_PHOTOS}张`;
+    if (photos.length >= MAX_PHOTOS) capture.disabled = true;
+  });
+  overlay.querySelector('.drawer-backdrop').addEventListener('click', stop);
+  overlay.querySelector('.drawer-close').addEventListener('click', stop);
+  overlay.querySelector('[data-camera-done]').addEventListener('click', stop);
+  document.body.append(overlay);
+}
+
+async function handlePatrolNativeCapture(input) {
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  const equipmentId = Number(input.dataset.equipmentId || 0);
+  const equipment = state.equipment.find((item) => item.id === equipmentId);
+  if (!equipment || Number(document.querySelector('#patrol-equipment')?.value || 0) !== equipmentId) {
+    return flash('巡检设备已经改变，请重新拍摄', 'error');
+  }
+  if (!file.type.startsWith('image/')) return flash('相机没有返回有效照片，请重新拍摄', 'error');
+  const photos = state.photos.patrol || (state.photos.patrol = []);
+  if (photos.length >= MAX_PHOTOS) return flash(`最多只能拍摄${MAX_PHOTOS}张照片`, 'error');
+  try {
+    photos.push(await watermarkedCapturedFile(file, equipment));
+  } catch (error) {
+    return flash(error.message, 'error');
+  }
+  state.patrolPhotoEquipmentId = equipment.id;
+  renderPhotoGrid('patrol');
+  updatePatrolPhotoRequirement();
 }
 
 function photoLightbox(attachment) {
@@ -205,6 +433,14 @@ function attachmentStrip(attachments) {
   return `<div class="photo-grid readonly">${attachments.map((item) => `
     <figure class="photo-thumb"><img src="/api/attachments/${item.id}/file" loading="lazy"
       alt="${escapeHtml(item.original_name || '现场照片')}" data-action="open-photo" data-id="${item.id}"></figure>`).join('')}</div>`;
+}
+
+function reviewAdminAttachmentStrip(attachments) {
+  if (!attachments?.length) return '';
+  return `<div class="photo-grid readonly">${attachments.map((item) => `
+    <figure class="photo-thumb"><img src="/api/attachments/${item.id}/file" loading="lazy"
+      alt="${escapeHtml(item.original_name || '评价照片')}" data-action="open-photo" data-id="${item.id}">
+      <button type="button" class="photo-remove" data-review-admin-delete="${item.id}" title="删除照片">×</button></figure>`).join('')}</div>`;
 }
 
 function fileToBase64(file) {
@@ -706,6 +942,8 @@ function bindStarsInput(root) {
 }
 
 function openReviewDrawer(workOrder, existing = null) {
+  clearPhotos('review');
+  state.activeReviewPhotos = [...(existing?.attachments || [])];
   const overlay = document.createElement('div');
   overlay.className = 'drawer';
   overlay.innerHTML = `<div class="drawer-backdrop"></div><div class="drawer-panel"><button class="drawer-close">×</button>
@@ -715,18 +953,49 @@ function openReviewDrawer(workOrder, existing = null) {
     <form class="form-card" id="review-form">
       ${REVIEW_DIMENSIONS.map((item) => `<div class="review-row"><span>${item.name}</span>${
         starsInput(item.key, existing ? Number(existing[`${item.key}_score`]) : 0)}</div>`).join('')}
-      <label>想说点什么（选填）<textarea name="comment" rows="3" placeholder="比如：修得挺快，就是等人等了半小时">${escapeHtml(existing?.comment || '')}</textarea></label>
+      <label>想说点什么（选填）<textarea name="comment" rows="3" placeholder="不会描述也没关系，可以直接拍照说明">${escapeHtml(existing?.comment || '')}</textarea></label>
+      <div class="photo-field">
+        <div class="photo-field-head"><span>问题照片（选填）</span><label class="button-link file-button small">拍照/上传<input type="file" accept="image/*" capture="environment" multiple data-review-photo-input></label></div>
+        <p class="hint">可以只拍照片说明现场情况，最多${MAX_PHOTOS}张。</p>
+        <div class="photo-grid" data-review-existing-photos></div>
+        <div class="photo-grid" data-photo-grid="review"></div>
+      </div>
       <p class="hint">评价只有你自己和管理员能看到，技术员只能看到自己的综合平均分。</p>
       <button>${existing ? '保存修改' : '提交评价'}</button>
     </form></div>`;
   bindStarsInput(overlay);
-  const close = () => overlay.remove();
+  const close = () => {
+    clearPhotos('review');
+    state.activeReviewPhotos = [];
+    overlay.remove();
+  };
+  const renderExistingPhotos = () => {
+    const grid = overlay.querySelector('[data-review-existing-photos]');
+    grid.innerHTML = state.activeReviewPhotos.map((item) => `
+      <figure class="photo-thumb"><img src="/api/attachments/${item.id}/file" loading="lazy"
+        alt="${escapeHtml(item.original_name || '评价照片')}" data-action="open-photo" data-id="${item.id}">
+        <button type="button" class="photo-remove" data-review-photo-delete="${item.id}" title="删除照片">×</button></figure>`).join('');
+    grid.querySelectorAll('[data-review-photo-delete]').forEach((button) => button.addEventListener('click', async () => {
+      if (!confirm('确认删除这张评价照片？')) return;
+      try {
+        await guarded(() => api(`/api/attachments/${button.dataset.reviewPhotoDelete}`, { method: 'DELETE' }), '照片已删除');
+      } catch { return; }
+      state.activeReviewPhotos = state.activeReviewPhotos.filter((item) => item.id !== Number(button.dataset.reviewPhotoDelete));
+      renderExistingPhotos();
+    }));
+  };
+  renderExistingPhotos();
+  overlay.querySelector('[data-review-photo-input]').addEventListener('change', (event) =>
+    handlePhotoPick('review', event.currentTarget, state.activeReviewPhotos.length));
   overlay.querySelector('.drawer-backdrop').onclick = close;
   overlay.querySelector('.drawer-close').onclick = close;
   overlay.querySelector('#review-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
-    const payload = { comment: form.querySelector('[name="comment"]').value };
+    const payload = {
+      comment: form.querySelector('[name="comment"]').value,
+      attachments: takePhotos('review'),
+    };
     for (const item of REVIEW_DIMENSIONS) {
       const value = Number(overlay.querySelector(`[data-stars="${item.key}"]`).dataset.value) || 0;
       if (!value) return flash(`请给「${item.name}」打个分`, 'error');
@@ -850,6 +1119,7 @@ async function loadMyReviewSummary() {
 
 async function loadReviewAdmin() {
   const [ranking, reviews] = await Promise.all([api('/api/reviews/technicians'), api('/api/reviews')]);
+  state.adminReviewPhotos = reviews.flatMap((item) => item.attachments || []);
   document.querySelector('#technician-ranking').innerHTML = ranking.length ? `
     <div class="table-wrap"><table><thead><tr><th>技术员</th><th>综合</th>${REVIEW_DIMENSIONS.map((d) => `<th>${d.name}</th>`).join('')}<th>评价数</th></tr></thead><tbody>
       ${ranking.map((item) => `<tr class="${item.technician_status === 'DISABLED' ? 'row-muted' : ''}">
@@ -866,8 +1136,18 @@ async function loadReviewAdmin() {
       <div class="stack-meta"><span>${escapeHtml(item.equipment_code || '')} ${escapeHtml(item.equipment_name || '')}</span><span>${escapeHtml(item.line_name || '')} ${escapeHtml(item.process_name || '')}</span></div>
       <div class="review-scores">${REVIEW_DIMENSIONS.map((d) => `<span>${d.name} ${item[`${d.key}_score`]}分</span>`).join('')}</div>
       ${item.comment ? `<p>“${escapeHtml(item.comment)}”</p>` : ''}
+      ${reviewAdminAttachmentStrip(item.attachments)}
       <div class="stack-meta"><span>技术员：${escapeHtml(item.technician || '未记录')}</span><span>评价人：${escapeHtml(item.reviewer)}</span><span>${formatTime(item.created_at)}</span></div>
     </article>`).join('') : '<div class="empty">还没有任何评价</div>';
+  document.querySelectorAll('[data-review-admin-delete]').forEach((button) => button.addEventListener('click', async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!confirm('确认删除这张评价照片？')) return;
+    try {
+      await guarded(() => api(`/api/attachments/${button.dataset.reviewAdminDelete}`, { method: 'DELETE' }), '照片已删除');
+    } catch { return; }
+    await loadReviewAdmin();
+  }));
 }
 
 // ---- 故障代码：三级级联 + 管理页 ----
@@ -1372,6 +1652,7 @@ function bindEquipmentPickers() {
       parts.workshop.value = '';
       parts.line.value = '';
       refreshEquipmentPicker(key);
+      afterPickerChange(key);
     });
     parts.equipment.addEventListener('change', () => afterPickerChange(key));
   }
@@ -1379,9 +1660,18 @@ function bindEquipmentPickers() {
 
 // 选定设备之后各表单自己要做的事
 function afterPickerChange(key) {
-  if (key !== 'repair') return;
-  syncRepairProcessField();
-  loadQuickFaults();
+  if (key === 'repair') {
+    syncRepairProcessField();
+    loadQuickFaults();
+  }
+  if (key === 'patrol') {
+    const equipmentId = Number(pickerParts('patrol')?.equipment.value || 0);
+    if (state.photos.patrol.length && state.patrolPhotoEquipmentId !== equipmentId) {
+      clearPhotos('patrol');
+      flash('巡检设备已改变，请重新拍摄现场照片', 'error');
+    }
+    updatePatrolPhotoRequirement();
+  }
 }
 
 // 从外部（扫码）把选择器定位到一台设备或一条产线
@@ -1419,6 +1709,7 @@ async function loadMeta() {
   nextStatuses = meta.work_order_transitions || {};
   workOrderStages = meta.work_order_stages || [];
   postArrivalStatuses = meta.post_arrival_statuses || [];
+  if (Array.isArray(meta.trial_results) && meta.trial_results.length) trialResults = meta.trial_results;
   if (Array.isArray(meta.withdrawable_statuses)) WITHDRAWABLE.splice(0, WITHDRAWABLE.length, ...meta.withdrawable_statuses);
   const legal = meta.legal || {};
   document.querySelector('#legal-company').textContent = legal.company_name || '优胜美';
@@ -1715,7 +2006,10 @@ const STAGE_ACTIONS = {
 };
 // 维修中可以岔出去的分支，做成次要按钮
 const STAGE_BRANCHES = {
-  IN_PROGRESS: [{ to: 'WAITING_PARTS', label: '等零件' }, { to: 'OUTSOURCED', label: '转外协' }],
+  IN_PROGRESS: [{ to: 'WAITING_PARTS', label: '等零件' }, { to: 'OUTSOURCED', label: '转外协' },
+    { to: 'ARRIVED', label: '返回核对报修信息' }],
+  WAITING_PARTS: [{ to: 'ARRIVED', label: '返回核对报修信息' }],
+  OUTSOURCED: [{ to: 'ARRIVED', label: '返回核对报修信息' }],
   TRIAL_RUN: [{ to: 'IN_PROGRESS', label: '试运行不通过，返工' }],
 };
 
@@ -1747,6 +2041,8 @@ function renderWorkOrderDetail() {
   const arrived = postArrivalStatuses.includes(w.status);
   const working = !['ARRIVED'].includes(w.status) && arrived;
   const canOperate = isMineToWork && !closed;
+  const reportInfoReady = Boolean(w.final_equipment_id && w.fault_code_id);
+  const currentTrialResult = trialResultMeta(w.trial_result);
   const equipmentOptions = optionList(state.equipment, 'id', (x) => `${x.code} · ${x.standard_name}`, true);
   const technicianOptions = optionList(
     state.members.filter((item) => item.status === 'ACTIVE' && Number(item.level) >= LEVELS.TECHNICIAN),
@@ -1774,9 +2070,9 @@ function renderWorkOrderDetail() {
 
   const repairResultBlock = `
     <section class="detail-block"><h3>维修结果</h3><div class="definition-grid">
-      <div class="wide"><small>诊断</small>${escapeHtml(w.diagnosis || '维修中，暂无')}</div>
+      <div class="wide"><small>诊断原因</small>${escapeHtml(w.diagnosis || '维修中，暂无')}</div>
       <div class="wide"><small>维修方法</small>${escapeHtml(w.repair_action || '维修中，暂无')}</div>
-      <div><small>试运行结果</small>${escapeHtml(w.trial_result || '—')}</div>
+      <div><small>试运行结果</small>${escapeHtml(trialResultText(w))}</div>
       <div><small>完成时间</small>${w.completed_at ? formatTime(w.completed_at) : '—'}</div>
     </div></section>`;
 
@@ -1785,6 +2081,7 @@ function renderWorkOrderDetail() {
     <section class="detail-block"><h3>报修人评价 ${starsView(detail.review.overall_score)}</h3>
       <div class="review-scores">${REVIEW_DIMENSIONS.map((d) => `<span>${d.name} ${detail.review[`${d.key}_score`]}分</span>`).join('')}</div>
       ${detail.review.comment ? `<p>“${escapeHtml(detail.review.comment)}”</p>` : ''}
+      ${attachmentStrip(detail.review.attachments)}
       <p class="hint">${escapeHtml(detail.review.reviewer)} · ${formatTime(detail.review.created_at)}</p>
     </section>` : '';
 
@@ -1814,7 +2111,9 @@ function renderWorkOrderDetail() {
     stageBody = `<p class="hint">试运行完就可以结单了，往下看「结单前检查」。</p>
       ${branches.map((b) => stepButton(b, 'secondary')).join(' ')}`;
   } else if (action) {
-    stageBody = `<p>${stepButton(action)} ${branches.map((b) => stepButton(b, 'secondary')).join(' ')}</p>`;
+    const blocked = w.status === 'ARRIVED' && !reportInfoReady;
+    stageBody = `${blocked ? '<p class="hint"><strong>请先在下方核对实际故障设备和故障分类。</strong></p>' : ''}
+      <p>${blocked ? `<button disabled>${escapeHtml(action.label)}</button>` : stepButton(action)} ${branches.map((b) => stepButton(b, 'secondary')).join(' ')}</p>`;
   } else {
     stageBody = `<p class="hint">当前阶段没有可执行的下一步。</p>`;
   }
@@ -1826,41 +2125,51 @@ function renderWorkOrderDetail() {
         <p><button class="danger small" data-to-status="CANCELLED" data-confirm="确认取消这张工单？">取消工单</button></p>` : ''}
     </section>`;
 
-  // ── 到场之后才解锁：判断是哪台设备、什么故障，人得在现场 ──
-  const arrivedBlocks = !arrived ? '' : `
-    <section class="detail-block ${w.fault_code_id ? '' : 'needs-attention'}"><h3>确认故障分类${w.fault_code_id ? '' : '<span class="status danger">结单前必填</span>'}</h3>
-      <p class="hint">${w.fault_code_id
-        ? `当前分类：${escapeHtml(w.fault_symptom)}。到场后发现报的不对可以在这里改。`
-        : '<strong>报修人没有选故障分类，结单会被拒绝。</strong>普工只写了现象，到场看过的你才分得准——选完这次的故障代码才能结单，否则这次故障进不了任何统计。'}</p>
-      ${canOperate ? `<form class="inline-form" id="classify-form">
-        <label>故障类别<select id="detail-fault-category">${optionList(state.faultCodes.categories, 'category', (x) => x.category, true)}</select></label>
-        <label>故障部位<select id="detail-fault-part"><option value="">请先选类别</option></select></label>
-        <label>故障现象<select name="fault_code_id" id="detail-fault-symptom" required><option value="">请先选部位</option></select></label>
-        <button>保存分类</button></form>` : ''}</section>
-    <section class="detail-block ${w.final_equipment_id ? '' : 'needs-attention'}"><h3>修正故障设备${w.final_equipment_id ? '' : '<span class="status danger">结单前必填</span>'}</h3>
-      <p class="hint">${w.final_equipment_id
-        ? '报修时设备填错或没填的，在这里改成实际维修的设备，维修记录才能算到对的设备上。'
-        : '<strong>这张工单还没挂到任何设备上，结单会被拒绝。</strong>报修人当时选的是"无法判断具体设备"，请指明你实际维修的是哪台——否则这次维修记不到任何设备账上，设备履历和故障统计都会漏掉它。'}</p>
-      ${canOperate ? `<form class="inline-form" id="correct-form"><label>实际设备<select name="equipment_id">${equipmentOptions}</select></label><label>修正原因<input name="reason" required></label><button>保存修正</button></form>` : ''}</section>`;
+  // ── 已到场阶段：设备与故障分类在一个区域里核对；开始维修后只留回退入口 ──
+  const reportInfoBlock = w.status !== 'ARRIVED' ? '' : `
+    <section class="detail-block ${reportInfoReady ? 'ready' : 'needs-attention'}" id="report-info-block">
+      <h3>核对报修信息<span class="status ${reportInfoReady ? '' : 'danger'}">${reportInfoReady ? '已核对' : '请补全'}</span></h3>
+      <div class="definition-grid">
+        <div><small>实际故障设备</small>${escapeHtml(w.final_equipment_code || '未确认')} ${escapeHtml(w.final_equipment_name || '')}</div>
+        <div class="wide"><small>故障分类</small>${escapeHtml(w.fault_code_id ? w.fault_symptom : '未确认')}</div>
+      </div>
+      ${canOperate ? `<p><button type="button" class="button-link small" id="report-info-edit">${reportInfoReady ? '报修信息有误？修改' : '补充核对信息'}</button></p>
+      <div id="report-info-forms" ${reportInfoReady ? 'hidden' : ''}>
+        <h4>实际故障设备</h4>
+        <form class="inline-form" id="correct-form"><label>实际设备<select name="equipment_id" required>${equipmentOptions}</select></label><label>修正原因<input name="reason" placeholder="设备发生变化时必填"></label><button>保存设备</button></form>
+        <h4>故障分类</h4>
+        <form class="inline-form" id="classify-form">
+          <label>故障类别<select id="detail-fault-category">${optionList(state.faultCodes.categories, 'category', (x) => x.category, true)}</select></label>
+          <label>故障部位<select id="detail-fault-part"><option value="">请先选类别</option></select></label>
+          <label>故障现象<select name="fault_code_id" id="detail-fault-symptom" required><option value="">请先选部位</option></select></label>
+          <button>保存分类</button></form>
+      </div>` : '<p class="hint">只有接单人能核对报修信息。</p>'}
+    </section>`;
 
   // ── 开始维修之后才解锁：没动手就没有诊断，也不会用掉零件 ──
   const workingBlocks = !working ? '' : `
-    <section class="detail-block"><h3>诊断与维修记录</h3>${canOperate
-      ? `<form class="inline-form" id="repair-detail-form"><label class="wide">诊断（结单前必填）<textarea name="diagnosis">${escapeHtml(w.diagnosis || '')}</textarea></label><label class="wide">根本原因<textarea name="root_cause">${escapeHtml(w.root_cause || '')}</textarea></label><label class="wide">维修方法（结单前必填）<textarea name="repair_action">${escapeHtml(w.repair_action || '')}</textarea></label><label>人工修正停机分钟<input type="number" min="0" name="downtime_minutes" value="${w.downtime_is_override ? escapeHtml(w.downtime_minutes ?? '') : ''}" placeholder="留空则结单时自动计算"></label><label>停机时长修正原因<input name="downtime_override_reason" value="${escapeHtml(w.downtime_override_reason || '')}" placeholder="人工填写分钟时必填"></label><label>试运行结果<input name="trial_result" value="${escapeHtml(w.trial_result || '')}"></label><button>保存维修记录</button></form>`
+    <section class="detail-block"><h3>维修记录</h3>${canOperate
+      ? `<form class="inline-form" id="repair-detail-form"><label class="wide">诊断原因（结单前必填）<textarea name="diagnosis">${escapeHtml(w.diagnosis || '')}</textarea></label><label class="wide">维修方法（结单前必填）<textarea name="repair_action">${escapeHtml(w.repair_action || '')}</textarea></label><div class="wide"><button type="button" class="button-link small" id="downtime-edit">停机时长不准确？手动修正</button></div><div class="wide inline-form" id="downtime-fields" ${w.downtime_is_override ? '' : 'hidden'}><label>人工修正停机分钟<input type="number" min="0" name="downtime_minutes" value="${w.downtime_is_override ? escapeHtml(w.downtime_minutes ?? '') : ''}" placeholder="留空则结单时自动计算"></label><label>停机时长修正原因<input name="downtime_override_reason" value="${escapeHtml(w.downtime_override_reason || '')}" placeholder="人工填写分钟时必填"></label></div><button>保存维修记录</button></form>`
       : '<p class="hint">只有接单人能填。</p>'}</section>
     <section class="detail-block"><h3>使用零件</h3>${canOperate
       ? `<form class="inline-form" id="part-form"><label>零件名称<input name="part_name" required></label><label>型号规格<input name="specification"></label><label>零件编码<input name="part_code"></label><label>数量<input type="number" step="0.01" min="0.01" name="quantity" value="1" required></label><label>单位<input name="unit" value="个" required></label><label>零件状态<select name="part_condition"><option value="NEW">新件</option><option value="REUSED">复用件</option><option value="REPAIRED">修复件</option></select></label><label>单价<input type="number" step="0.01" min="0" name="unit_cost"></label><label>来源<input name="source"></label><label>旧件处理<input name="old_part_disposition"></label><button>添加零件</button></form>` : ''}
       <div class="table-wrap"><table><thead><tr><th>零件</th><th>规格</th><th>数量</th><th>来源</th><th>记录人</th></tr></thead><tbody>${detail.parts.length ? detail.parts.map((p) => `<tr><td>${escapeHtml(p.part_name)}</td><td>${escapeHtml(p.specification || '—')}</td><td>${p.quantity} ${escapeHtml(p.unit)}</td><td>${escapeHtml(p.source || '—')}</td><td>${escapeHtml(p.recorded_by)}</td></tr>`).join('') : '<tr><td colspan="5" class="empty">未记录零件</td></tr>'}</tbody></table></div></section>`;
 
+  const trialBlock = w.status !== 'TRIAL_RUN' ? '' : `
+    <section class="detail-block ${currentTrialResult ? (currentTrialResult.closable ? 'ready' : 'needs-attention') : 'needs-attention'}"><h3>试运行结果${currentTrialResult ? '' : '<span class="status danger">请选择</span>'}</h3>
+      ${canOperate ? `<form id="trial-result-form" class="trial-form"><div class="trial-options">${trialResults.map((item) => `<label class="trial-option"><input type="radio" name="trial_result" value="${escapeHtml(item.value)}" ${w.trial_result === item.value ? 'checked' : ''}><span><strong>${escapeHtml(item.name)}</strong>${item.closable ? '' : '<small>不能结单，需要返回维修</small>'}</span></label>`).join('')}</div><label id="trial-issue-field" ${w.trial_result === 'OPERABLE_WITH_ISSUES' ? '' : 'hidden'}>问题说明<textarea name="trial_issue_description" maxlength="1000">${escapeHtml(w.trial_issue_description || '')}</textarea></label><button>保存试运行结果</button></form>` : '<p class="hint">只有接单人能填写试运行结果。</p>'}
+      ${w.trial_result === 'UNABLE_TO_RUN' ? '<p class="hint"><strong>当前设备无法运行，不能结单。请使用上方“试运行不通过，返工”。</strong></p>' : ''}
+    </section>`;
+
   // ── 结单前检查：硬校验各一行，缺哪项一眼看到，按钮就在下面 ──
   // 判定条件必须和服务端 transitionWorkOrder 保持一致。
   // 这里只是把它们提前显示出来，把关仍然在服务端。
   const checks = [
-    { ok: Boolean(w.trial_result), name: '试运行结果', value: w.trial_result, fix: '在上面「诊断与维修记录」里填' },
-    { ok: Boolean(w.diagnosis), name: '故障诊断', value: w.diagnosis, fix: '在上面「诊断与维修记录」里填' },
-    { ok: Boolean(w.repair_action), name: '维修方法', value: w.repair_action, fix: '在上面「诊断与维修记录」里填' },
-    { ok: Boolean(w.final_equipment_id), name: '故障设备归属', value: w.final_equipment_code, fix: '在上面「修正故障设备」里指明' },
-    { ok: Boolean(w.fault_code_id), name: '故障分类', value: w.fault_symptom, fix: '在上面「确认故障分类」里选' },
+    { ok: Boolean(currentTrialResult) || w.status === 'PENDING_REVIEW', name: '试运行结果', value: trialResultText(w), fix: '在上面「试运行结果」里选择' },
+    { ok: Boolean(w.diagnosis), name: '诊断原因', value: w.diagnosis, fix: '返回维修并填写「维修记录」' },
+    { ok: Boolean(w.repair_action), name: '维修方法', value: w.repair_action, fix: '返回维修并填写「维修记录」' },
+    { ok: Boolean(w.final_equipment_id), name: '故障设备归属', value: w.final_equipment_code, fix: '返回「核对报修信息」确认' },
+    { ok: Boolean(w.fault_code_id), name: '故障分类', value: w.fault_symptom, fix: '返回「核对报修信息」确认' },
   ];
   const missing = checks.filter((item) => !item.ok).length;
   const closeBlock = (w.status !== 'TRIAL_RUN' && w.status !== 'PENDING_REVIEW') || !canOperate ? '' : `
@@ -1871,13 +2180,16 @@ function renderWorkOrderDetail() {
         <span>${item.ok ? escapeHtml(item.value || '已填写') : `还没填 —— ${item.fix}`}</span></li>`).join('')}</ul>
       <p>${missing
         ? `<button disabled>还差 ${missing} 项才能结单</button>`
-        : '<button data-to-status="COMPLETED">结单</button>'}</p></section>`;
+        : (w.status === 'PENDING_REVIEW' || currentTrialResult?.closable)
+          ? '<button data-to-status="COMPLETED">结单</button>'
+          : '<button disabled>当前试运行结果不能结单</button>'}</p></section>`;
 
   const repairView = `
     ${stageBlock}
     ${problemBlock}
-    ${arrivedBlocks}
+    ${reportInfoBlock}
     ${workingBlocks}
+    ${trialBlock}
     ${closeBlock}
     ${reviewBlock}
     ${historyBlock}`;
@@ -1891,6 +2203,7 @@ function renderWorkOrderDetail() {
 }
 
 function bindWorkOrderForms(id) {
+  const w = state.selectedWorkOrder.work_order;
   const bind = (selector, handler) => { const form = document.querySelector(selector); if (form) form.addEventListener('submit', handler); };
   const photoInput = document.querySelector('#work-order-photo-input');
   if (photoInput) photoInput.addEventListener('change', async () => {
@@ -1926,6 +2239,7 @@ function bindWorkOrderForms(id) {
   bindDetailFaultCascade();
   bind('#classify-form', async (event) => { event.preventDefault(); await mutateWorkOrder(`/api/work-orders/${id}/fault-code`, 'POST', formObject(event.currentTarget), '故障分类已确认'); });
   bind('#repair-detail-form', async (event) => { event.preventDefault(); await mutateWorkOrder(`/api/work-orders/${id}/repair-detail`, 'PUT', formObject(event.currentTarget), '维修记录已保存'); });
+  bind('#trial-result-form', async (event) => { event.preventDefault(); await mutateWorkOrder(`/api/work-orders/${id}/trial-result`, 'PUT', formObject(event.currentTarget), '试运行结果已保存'); });
   bind('#part-form', async (event) => {
     event.preventDefault();
     await mutateWorkOrder(
@@ -1936,6 +2250,35 @@ function bindWorkOrderForms(id) {
       { idempotent: true },
     );
   });
+  const reportInfoEdit = document.querySelector('#report-info-edit');
+  if (reportInfoEdit) reportInfoEdit.addEventListener('click', () => {
+    const forms = document.querySelector('#report-info-forms');
+    forms.hidden = !forms.hidden;
+  });
+  const equipmentSelect = document.querySelector('#correct-form select[name="equipment_id"]');
+  const reasonInput = document.querySelector('#correct-form input[name="reason"]');
+  if (equipmentSelect) {
+    equipmentSelect.value = w.final_equipment_id ? String(w.final_equipment_id) : '';
+    const syncReasonRequired = () => { reasonInput.required = equipmentSelect.value !== String(w.final_equipment_id || ''); };
+    equipmentSelect.addEventListener('change', syncReasonRequired);
+    syncReasonRequired();
+  }
+  const downtimeEdit = document.querySelector('#downtime-edit');
+  if (downtimeEdit) downtimeEdit.addEventListener('click', () => {
+    const fields = document.querySelector('#downtime-fields');
+    fields.hidden = !fields.hidden;
+  });
+  const trialForm = document.querySelector('#trial-result-form');
+  if (trialForm) {
+    const syncTrialIssue = () => {
+      const needsIssue = trialForm.elements.trial_result.value === 'OPERABLE_WITH_ISSUES';
+      const field = document.querySelector('#trial-issue-field');
+      field.hidden = !needsIssue;
+      field.querySelector('textarea').required = needsIssue;
+    };
+    trialForm.addEventListener('change', syncTrialIssue);
+    syncTrialIssue();
+  }
 }
 
 // 工单详情里那份三级级联是独立的一套控件（报修表单那套在另一个页面上，
@@ -2207,15 +2550,70 @@ async function loadOperationalReport() {
     ['平均维修', totals.avg_repair_minutes == null ? '—' : formatDuration(Math.round(totals.avg_repair_minutes))],
     ['重复报修', totals.repeat_repairs || 0],
   ].map(([name, value]) => `<article class="metric card"><strong>${value}</strong><small>${name}</small></article>`).join('');
-  document.querySelector('#report-faults').innerHTML = report.faults.map((item) =>
-    `<tr><td>${escapeHtml(`${item.category} / ${item.part} / ${item.symptom}`)}</td><td>${item.count}</td><td>${item.downtime_minutes || 0}</td></tr>`).join('')
+  document.querySelector('#report-lines').innerHTML = report.lines.map((item) =>
+    `<tr class="clickable-row" tabindex="0" role="button" aria-label="查看${escapeHtml(item.line_name)}的故障工单"
+      data-action="report-drilldown" data-kind="line" data-line-id="${item.line_id}" data-label="${escapeHtml(item.line_name)}">
+      <td><strong>${escapeHtml(item.line_name)}</strong><br><small>${escapeHtml(item.line_code)}</small></td><td>${item.fault_count}</td><td>${item.downtime_minutes || 0}</td></tr>`).join('')
+    || '<tr><td colspan="3" class="empty">暂无数据</td></tr>';
+  document.querySelector('#report-faults').innerHTML = report.fault_categories.map((item) =>
+    `<tr class="clickable-row" tabindex="0" role="button" aria-label="查看${escapeHtml(item.category)}的故障工单"
+      data-action="report-drilldown" data-kind="fault_category" data-category-key="${escapeHtml(item.category_key)}" data-label="${escapeHtml(item.category)}">
+      <td><strong>${escapeHtml(item.category)}</strong></td><td>${item.fault_count}</td><td>${item.downtime_minutes || 0}</td></tr>`).join('')
     || '<tr><td colspan="3" class="empty">暂无数据</td></tr>';
   document.querySelector('#report-equipment').innerHTML = report.equipment.map((item) =>
-    `<tr><td>${escapeHtml(`${item.code} · ${item.standard_name}`)}</td><td>${item.fault_count}</td><td>${item.downtime_minutes || 0}</td></tr>`).join('')
-    || '<tr><td colspan="3" class="empty">暂无数据</td></tr>';
+    `<tr class="clickable-row" tabindex="0" role="button" aria-label="查看${escapeHtml(item.code)}在${escapeHtml(item.line_name)}的故障工单"
+      data-action="report-drilldown" data-kind="equipment" data-equipment-id="${item.equipment_id}" data-line-id="${item.line_id}" data-label="${escapeHtml(`${item.code} · ${item.standard_name}`)}">
+      <td><strong>${escapeHtml(item.code)}</strong><br><small>${escapeHtml(item.standard_name)}</small></td><td>${escapeHtml(item.line_name)}</td><td>${item.fault_count}</td><td>${item.downtime_minutes || 0}</td></tr>`).join('')
+    || '<tr><td colspan="4" class="empty">暂无数据</td></tr>';
   document.querySelector('#report-tasks').innerHTML = report.tasks.map((item) =>
     `<tr><td>${item.task_kind === 'INSPECTION' ? '点检' : '保养'}</td><td>${item.due_count}</td><td>${item.executed_count}</td><td>${item.abnormal_count}</td><td>${item.overdue_count}</td></tr>`).join('')
     || '<tr><td colspan="5" class="empty">暂无数据</td></tr>';
+}
+
+async function openReportDrilldown(trigger) {
+  const params = new URLSearchParams({
+    start: document.querySelector('#report-start').value,
+    end: document.querySelector('#report-end').value,
+    kind: trigger.dataset.kind,
+  });
+  if (trigger.dataset.lineId) params.set('line_id', trigger.dataset.lineId);
+  if (trigger.dataset.equipmentId) params.set('equipment_id', trigger.dataset.equipmentId);
+  if (trigger.dataset.categoryKey) params.set('category_key', trigger.dataset.categoryKey);
+  let rows;
+  try {
+    rows = await guarded(() => api(`/api/reports/operations/work-orders?${params}`));
+  } catch { return; }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'drawer report-drilldown-drawer';
+  overlay.innerHTML = `<div class="drawer-backdrop"></div><div class="drawer-panel"><button type="button" class="drawer-close">×</button>
+    <p class="eyebrow">运营报表 · ${escapeHtml(document.querySelector('#report-start').value)} 至 ${escapeHtml(document.querySelector('#report-end').value)}</p>
+    <h2>${escapeHtml(trigger.dataset.label)} · 关联工单</h2>
+    <p class="hint">共${rows.length}张，点击任一工单查看完整维修详情。</p>
+    <div class="stack-list" data-report-work-orders>${rows.length ? rows.map((item) => `
+      <article class="stack-item clickable-card" tabindex="0" role="button" data-report-work-order="${item.id}" aria-label="打开工单${escapeHtml(item.work_order_no)}">
+        <div class="stack-title"><strong>${escapeHtml(item.work_order_no)}</strong><span class="status ${item.status === 'CANCELLED' ? 'danger' : item.status === 'COMPLETED' ? '' : 'pending'}">${escapeHtml(labels[item.status] || item.status)}</span></div>
+        <div><strong>${escapeHtml(item.fault_category)} · ${escapeHtml(item.fault_symptom)}</strong>${item.is_downtime ? '<span class="status danger">停机</span>' : ''}</div>
+        <div class="stack-meta"><span>${escapeHtml(item.line_name)} / ${escapeHtml(item.process_name)}</span><span>${escapeHtml(item.equipment_code || '设备待确认')} ${escapeHtml(item.equipment_name || '')}</span><span>${formatTime(item.reported_at)}</span>${item.assignee ? `<span>技术员：${escapeHtml(item.assignee)}</span>` : ''}${item.downtime_minutes ? `<span>停机${item.downtime_minutes}分钟</span>` : ''}</div>
+      </article>`).join('') : '<div class="empty">没有匹配的工单</div>'}</div>
+    </div>`;
+  const close = () => overlay.remove();
+  overlay.querySelector('.drawer-backdrop').addEventListener('click', close);
+  overlay.querySelector('.drawer-close').addEventListener('click', close);
+  const openOrder = (node) => {
+    const id = Number(node.dataset.reportWorkOrder);
+    close();
+    openWorkOrder(id);
+  };
+  overlay.querySelectorAll('[data-report-work-order]').forEach((node) => {
+    node.addEventListener('click', () => openOrder(node));
+    node.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      openOrder(node);
+    });
+  });
+  document.body.append(overlay);
 }
 
 function processLabelHtml(item) {
@@ -2415,10 +2813,9 @@ function profileRepairTab(history) {
         <div><small>技术员</small>${escapeHtml(w.assignee || '未接单')}</div>
         <div><small>停机时长</small>${w.downtime_minutes ? `${w.downtime_minutes} 分钟` : '—'}</div>
         <div class="wide"><small>故障现象</small>${escapeHtml(w.fault_symptom)}${w.fault_location ? `（${escapeHtml(w.fault_location)}）` : ''}</div>
-        ${w.diagnosis ? `<div class="wide"><small>诊断</small>${escapeHtml(w.diagnosis)}</div>` : ''}
-        ${w.root_cause ? `<div class="wide"><small>根本原因</small>${escapeHtml(w.root_cause)}</div>` : ''}
+        ${w.diagnosis ? `<div class="wide"><small>诊断原因</small>${escapeHtml(w.diagnosis)}</div>` : ''}
         ${w.repair_action ? `<div class="wide"><small>维修方法</small>${escapeHtml(w.repair_action)}</div>` : ''}
-        ${w.trial_result ? `<div class="wide"><small>试运行结果</small>${escapeHtml(w.trial_result)}</div>` : ''}
+        ${w.trial_result ? `<div class="wide"><small>试运行结果</small>${escapeHtml(trialResultText(w))}</div>` : ''}
         <div><small>完成时间</small>${w.completed_at ? formatTime(w.completed_at) : '—'}</div>
       </div>
       ${w.attachments?.length ? `<h4 class="photo-heading">现场照片（${w.attachments.length}）</h4>${attachmentStrip(w.attachments)}` : ''}
@@ -2967,10 +3364,14 @@ document.querySelector('#repair-urgency').addEventListener('change', (event) => 
 document.querySelector('#repair-downtime').addEventListener('change', (event) => { event.target.dataset.touched = '1'; });
 document.querySelectorAll('[data-photo-input]').forEach((input) =>
   input.addEventListener('change', () => handlePhotoPick(input.dataset.photoInput, input)));
+document.querySelector('#open-patrol-camera').addEventListener('click', openPatrolCamera);
+document.querySelector('#patrol-camera-fallback').addEventListener('change', (event) =>
+  handlePatrolNativeCapture(event.currentTarget));
 
 document.querySelector('#patrol-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
+  if (!state.photos.patrol.length) return flash('请先现场拍摄至少一张巡检照片', 'error');
   const payload = { ...formObject(form), attachments: takePhotos('patrol') };
   await guarded(() => api('/api/patrols', {
     method: 'POST', body: JSON.stringify(payload), idempotent: true,
@@ -3096,12 +3497,20 @@ document.addEventListener('click', (event) => {
       break;
     }
     case 'open-work-order': openWorkOrder(id); break;
+    case 'report-drilldown': openReportDrilldown(trigger); break;
     case 'execute-task': openTaskExecution(id, kind); break;
     case 'task-to-repair': convertTaskToRepair(id, kind); break;
     case 'close-task-abnormal': closeTaskAbnormal(id, kind); break;
     case 'print-page': window.print(); break;
     default: break;
   }
+});
+
+document.addEventListener('keydown', (event) => {
+  const trigger = event.target.closest('tr.clickable-row[data-action]');
+  if (!trigger || (event.key !== 'Enter' && event.key !== ' ')) return;
+  event.preventDefault();
+  trigger.click();
 });
 
 window.reviewChange = reviewChange;
@@ -3126,7 +3535,8 @@ window.reopenWorkOrder = (id) => {
 };
 window.openPhoto = (id) => {
   const all = [...state.patrols.flatMap((p) => p.attachments || []),
-    ...(state.selectedWorkOrder?.attachments || []), ...(state.equipmentProfile?.photos || [])];
+    ...(state.selectedWorkOrder?.attachments || []), ...(state.equipmentProfile?.photos || []),
+    ...state.activeReviewPhotos, ...state.adminReviewPhotos];
   photoLightbox(all.find((item) => item.id === id) || { id, uploaded_by: '', created_at: null });
 };
 window.openStructureDrawer = openStructureDrawer;

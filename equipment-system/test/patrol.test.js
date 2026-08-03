@@ -64,7 +64,7 @@ test('技术员扫码巡检：编号、拍照、发现说明都记下来，并�
   assert.equal(created.attachments.length, 2);
   assert.equal(created.work_order_id, null);
 
-  const second = service.createPatrolRecord({ equipment_id: equipment.id, findings: '一切正常' }, technician);
+  const second = service.createPatrolRecord({ equipment_id: equipment.id, findings: '一切正常', attachments: [photo()] }, technician);
   assert.match(second.patrol_no, /^PT-\d{8}-00002$/, '巡检单号要连续发');
   cleanup();
 });
@@ -77,9 +77,17 @@ test('巡检发现必填，且必须指明巡检对象', () => {
   cleanup();
 });
 
+test('巡检必须至少提交一张现场照片', () => {
+  const { service, technician, equipment, cleanup } = fixture();
+  assert.throws(() => service.createPatrolRecord({
+    equipment_id: equipment.id, findings: '设备运行正常', attachments: [],
+  }, technician), (error) => error.code === 'PATROL_PHOTO_REQUIRED');
+  cleanup();
+});
+
 test('普工不能巡检，也看不到巡检记录', () => {
   const { service, technician, worker, equipment, cleanup } = fixture();
-  service.createPatrolRecord({ equipment_id: equipment.id, findings: '正常' }, technician);
+  service.createPatrolRecord({ equipment_id: equipment.id, findings: '正常', attachments: [photo()] }, technician);
   assert.throws(() => service.createPatrolRecord({ equipment_id: equipment.id, findings: '我也来巡' }, worker), /无权/);
   assert.throws(() => service.listPatrolRecords(worker), /无权查看巡检记录/);
   assert.equal(service.listPatrolRecords(technician).length, 1);
@@ -128,7 +136,7 @@ test('当场解决不了的巡检可以转成维修工单，两边互相关联',
 test('转维修会触发设备状态联动', () => {
   const { service, technician, equipment, faultCode, cleanup } = fixture();
   assert.equal(service.getEquipment(equipment.id).status, 'ACTIVE');
-  const patrol = service.createPatrolRecord({ equipment_id: equipment.id, findings: '需要停机处理' }, technician);
+  const patrol = service.createPatrolRecord({ equipment_id: equipment.id, findings: '需要停机处理', attachments: [photo()] }, technician);
   assert.equal(service.getEquipment(equipment.id).status, 'ACTIVE', '光巡检不改设备状态');
   service.convertPatrolToWorkOrder(patrol.id, { fault_code_id: faultCode.id }, technician);
   assert.equal(service.getEquipment(equipment.id).status, 'REPORTED', '转成工单后才进入报修状态');
@@ -138,7 +146,7 @@ test('转维修会触发设备状态联动', () => {
 test('巡检记录进入设备履历，并计入统计', () => {
   const { service, technician, equipment, cleanup } = fixture();
   service.createPatrolRecord({ equipment_id: equipment.id, findings: '正常', attachments: [photo()] }, technician);
-  service.createPatrolRecord({ equipment_id: equipment.id, findings: '润滑已补' }, technician);
+  service.createPatrolRecord({ equipment_id: equipment.id, findings: '润滑已补', attachments: [photo()] }, technician);
 
   const history = service.equipmentHistory(equipment.id);
   assert.equal(history.patrols.length, 2);
@@ -146,7 +154,7 @@ test('巡检记录进入设备履历，并计入统计', () => {
   assert.equal(history.patrols[1].attachments.length, 1);
   assert.equal(history.summary.patrols, 2);
   assert.ok(history.summary.last_patrol_at);
-  assert.equal(history.summary.photos, 1);
+  assert.equal(history.summary.photos, 2);
   cleanup();
 });
 
@@ -156,7 +164,7 @@ test('没有关联工序的巡检不能转维修', () => {
   const spare = service.createEquipment({
     standard_name: '仓库备用机', category: '生产主机', type_code: 'MIX',
   }, manager);
-  const patrol = service.createPatrolRecord({ equipment_id: spare.id, findings: '库存机外观有锈迹' }, technician);
+  const patrol = service.createPatrolRecord({ equipment_id: spare.id, findings: '库存机外观有锈迹', attachments: [photo()] }, technician);
   assert.equal(patrol.process_id, null);
   assert.throws(() => service.convertPatrolToWorkOrder(patrol.id, {}, technician), /没有关联工序/);
   cleanup();

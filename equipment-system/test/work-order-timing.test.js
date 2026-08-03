@@ -96,8 +96,9 @@ test('总览的两个平均时长只统计时间戳齐全的已完成工单', ()
   for (const status of ['ARRIVED', 'IN_PROGRESS']) {
     f.service.transitionWorkOrder(created.id, { to_status: status }, f.technician);
   }
-  f.service.updateRepairDetail(created.id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '正常' }, f.technician);
+  f.service.updateRepairDetail(created.id, { diagnosis: '测试诊断', repair_action: '测试维修' }, f.technician);
   f.service.transitionWorkOrder(created.id, { to_status: 'TRIAL_RUN' }, f.technician);
+  f.service.updateTrialResult(created.id, { trial_result: 'NORMAL' }, f.technician);
   f.service.transitionWorkOrder(created.id, { to_status: 'COMPLETED' }, f.technician);
 
   const stats = f.service.dashboard();
@@ -114,8 +115,9 @@ test('改造前的老工单（没有到场时间）不会把均值拖下去', ()
   for (const status of ['ARRIVED', 'IN_PROGRESS']) {
     f.service.transitionWorkOrder(created.id, { to_status: status }, f.technician);
   }
-  f.service.updateRepairDetail(created.id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '正常' }, f.technician);
+  f.service.updateRepairDetail(created.id, { diagnosis: '测试诊断', repair_action: '测试维修' }, f.technician);
   f.service.transitionWorkOrder(created.id, { to_status: 'TRIAL_RUN' }, f.technician);
+  f.service.updateTrialResult(created.id, { trial_result: 'NORMAL' }, f.technician);
   f.service.transitionWorkOrder(created.id, { to_status: 'COMPLETED' }, f.technician);
   const before = f.service.dashboard();
 

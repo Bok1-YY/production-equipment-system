@@ -134,18 +134,21 @@ test('转派一张已经在修的单，不会把它退回"还没到场"', () => 
 
 // ---- 到场之前不能做到场之后的事 ----
 
-const ARRIVAL_GATED = [
+const REPORT_INFO_ACTIONS = [
   ['修正故障设备', (f, id, ctx) => f.service.correctWorkOrderEquipment(id, { equipment_id: f.equipment.id, reason: '就是这台' }, ctx)],
   ['确认故障分类', (f, id, ctx) => f.service.classifyWorkOrder(id, { fault_code_id: f.faultCode.id }, ctx)],
+];
+const REPAIR_ACTIONS = [
   ['填写维修记录', (f, id, ctx) => f.service.updateRepairDetail(id, { diagnosis: '轴承缺油' }, ctx)],
   ['记录使用零件', (f, id, ctx) => f.service.addWorkOrderPart(id, { part_name: '轴承', quantity: 1, unit: '只' }, ctx)],
 ];
+const STAGE_GATED = [...REPORT_INFO_ACTIONS, ...REPAIR_ACTIONS];
 
 test('待接单阶段，四个到场后的操作技术员一个都做不了', () => {
   const f = fixture();
   const id = report(f);
-  for (const [name, action] of ARRIVAL_GATED) {
-    assert.throws(() => action(f, id, f.technician), /要先到现场/, `${name}不该在待接单阶段就能做`);
+  for (const [name, action] of STAGE_GATED) {
+    assert.throws(() => action(f, id, f.technician), /先到现场|先开始维修/, `${name}不该在待接单阶段就能做`);
   }
   f.db.close();
 });
@@ -155,39 +158,45 @@ test('已接单但还没到场，四个操作仍然做不了', () => {
   const id = report(f);
   f.service.assignWorkOrder(id, {}, f.technician);
   assert.equal(statusOf(f, id), 'ACCEPTED');
-  for (const [name, action] of ARRIVAL_GATED) {
-    assert.throws(() => action(f, id, f.technician), /要先到现场/, `${name}要求人已经到现场`);
+  for (const [name, action] of STAGE_GATED) {
+    assert.throws(() => action(f, id, f.technician), /先到现场|先开始维修/, `${name}要求人已经到现场`);
   }
   f.db.close();
 });
 
-test('到场之后四个操作全部放行', () => {
+test('已到场只开放报修信息核对，维修记录和零件要等开工', () => {
   const f = fixture();
   const id = report(f);
   f.service.assignWorkOrder(id, {}, f.technician);
   f.service.transitionWorkOrder(id, { to_status: 'ARRIVED' }, f.technician);
   assert.ok(POST_ARRIVAL_STATUSES.includes(statusOf(f, id)));
-  for (const [name, action] of ARRIVAL_GATED) {
-    assert.doesNotThrow(() => action(f, id, f.technician), `${name}到场后应该可以做`);
+  for (const [name, action] of REPORT_INFO_ACTIONS) {
+    assert.doesNotThrow(() => action(f, id, f.technician), `${name}应在核对阶段完成`);
+  }
+  for (const [name, action] of REPAIR_ACTIONS) {
+    assert.throws(() => action(f, id, f.technician), /先开始维修/, `${name}不应提前到核对阶段`);
   }
   f.db.close();
 });
 
-test('管理员不受"要先到场"的限制——误报在派单前就能改掉', () => {
+test('管理员可以在派单前修正报修信息，但不能提前填写维修记录', () => {
   const f = fixture();
   const id = report(f);
-  for (const [name, action] of ARRIVAL_GATED) {
+  for (const [name, action] of REPORT_INFO_ACTIONS) {
     assert.doesNotThrow(() => action(f, id, f.manager), `管理员应该能在派单前${name}`);
+  }
+  for (const [name, action] of REPAIR_ACTIONS) {
+    assert.throws(() => action(f, id, f.manager), /先开始维修/, `管理员也不能提前${name}`);
   }
   f.db.close();
 });
 
-test('到场之后但不是接单人，四个操作也做不了', () => {
+test('到场之后但不是接单人，核对操作也做不了', () => {
   const f = fixture();
   const id = report(f);
   f.service.assignWorkOrder(id, {}, f.technician);
   f.service.transitionWorkOrder(id, { to_status: 'ARRIVED' }, f.technician);
-  for (const [name, action] of ARRIVAL_GATED) {
+  for (const [name, action] of REPORT_INFO_ACTIONS) {
     assert.throws(() => action(f, id, f.other), /由技术员张三负责/, `${name}也要认接单人`);
   }
   f.db.close();
@@ -197,7 +206,7 @@ test('已结束的工单，四个操作都被拒（连管理员也不行）', ()
   const f = fixture();
   const id = report(f);
   f.service.transitionWorkOrder(id, { to_status: 'CANCELLED', note: '误报' }, f.manager);
-  for (const [name, action] of ARRIVAL_GATED) {
+  for (const [name, action] of STAGE_GATED) {
     assert.throws(() => action(f, id, f.manager), /已结束工单/, `${name}在已结束工单上不该放行`);
   }
   f.db.close();
@@ -253,14 +262,40 @@ test('阶段表是有序的，且每个阶段都对应真实状态', () => {
   }
 });
 
+test('维修中及其分支可以回退核对信息，且首次时间和维修记录不丢失', () => {
+  const f = fixture();
+  const id = report(f);
+  f.service.assignWorkOrder(id, {}, f.technician);
+  const arrived = f.service.transitionWorkOrder(id, { to_status: 'ARRIVED' }, f.technician).work_order;
+  const started = f.service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, f.technician).work_order;
+  f.service.updateRepairDetail(id, { diagnosis: '轴承缺油', repair_action: '补充润滑脂' }, f.technician);
+
+  assert.throws(() => f.service.classifyWorkOrder(id, { fault_code_id: f.faultCode.id }, f.technician),
+    /返回「核对报修信息」/);
+  const back = f.service.transitionWorkOrder(id, { to_status: 'ARRIVED' }, f.technician).work_order;
+  assert.equal(back.arrived_at, arrived.arrived_at);
+  assert.equal(back.started_at, started.started_at);
+  assert.equal(back.diagnosis, '轴承缺油');
+  assert.doesNotThrow(() => f.service.classifyWorkOrder(id, { fault_code_id: f.faultCode.id }, f.technician));
+
+  f.service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, f.technician);
+  f.service.transitionWorkOrder(id, { to_status: 'WAITING_PARTS' }, f.technician);
+  assert.equal(f.service.transitionWorkOrder(id, { to_status: 'ARRIVED' }, f.technician).work_order.status, 'ARRIVED');
+  f.service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, f.technician);
+  f.service.transitionWorkOrder(id, { to_status: 'OUTSOURCED' }, f.technician);
+  assert.equal(f.service.transitionWorkOrder(id, { to_status: 'ARRIVED' }, f.technician).work_order.status, 'ARRIVED');
+  f.db.close();
+});
+
 test('走完整条路：接单 → 到场 → 维修 → 试运行 → 结单', () => {
   const f = fixture();
   const id = report(f);
   f.service.assignWorkOrder(id, {}, f.technician);
   f.service.transitionWorkOrder(id, { to_status: 'ARRIVED' }, f.technician);
   f.service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, f.technician);
-  f.service.updateRepairDetail(id, { diagnosis: '轴承缺油', repair_action: '补充润滑脂', trial_result: '异响消除' }, f.technician);
+  f.service.updateRepairDetail(id, { diagnosis: '轴承缺油', repair_action: '补充润滑脂' }, f.technician);
   f.service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, f.technician);
+  f.service.updateTrialResult(id, { trial_result: 'NORMAL' }, f.technician);
   const done = f.service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, f.technician).work_order;
   assert.equal(done.status, 'COMPLETED');
   // 四个时刻齐全，两段时长才算得出来

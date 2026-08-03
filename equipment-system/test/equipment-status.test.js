@@ -59,8 +59,9 @@ test('报修两段联动：提交变已报修，开工变维修中，结单回�
   service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, technician);
   assert.equal(statusOf(service, equipment.id), 'REPAIRING', '开工后应变为维修中');
 
-  service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '空载正常' }, technician);
+  service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修' }, technician);
   service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, technician);
+  service.updateTrialResult(id, { trial_result: 'NORMAL' }, technician);
   assert.equal(statusOf(service, equipment.id), 'REPAIRING', '试运行仍算维修中');
   assert.equal(statusOf(service, equipment.id), 'REPAIRING', '待审核仍算维修中');
 
@@ -88,8 +89,9 @@ test('同一设备多张工单时，关掉其中一张不会提前恢复', () =>
   repairUpTo(service, technician, first, 'IN_PROGRESS');
   assert.equal(statusOf(service, equipment.id), 'REPAIRING', '有一张开工了就算维修中');
 
-  service.updateRepairDetail(first, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '异响消除' }, technician);
+  service.updateRepairDetail(first, { diagnosis: '测试诊断', repair_action: '测试维修' }, technician);
   service.transitionWorkOrder(first, { to_status: 'TRIAL_RUN' }, technician);
+  service.updateTrialResult(first, { trial_result: 'NORMAL' }, technician);
   service.transitionWorkOrder(first, { to_status: 'COMPLETED' }, technician);
   assert.equal(statusOf(service, equipment.id), 'REPORTED', '第二张还没结，应退回已报修而不是在用');
 
@@ -110,8 +112,9 @@ test('维修期间手工改状态改的是baseline，结单后才生效', () => 
   assert.equal(updated.status, 'REPAIRING', '维修期间手工修改不能冲掉维修中');
   assert.equal(updated.baseline_status, 'IDLE');
 
-  service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '正常' }, technician);
+  service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修' }, technician);
   service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, technician);
+  service.updateTrialResult(id, { trial_result: 'NORMAL' }, technician);
   service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, technician);
   assert.equal(statusOf(service, equipment.id), 'IDLE', '结单后应落到手工选的闲置，而不是在用');
   db.close();
@@ -127,7 +130,7 @@ test('没有未结工单时手工改状态立即生效，且不能手工写入�
   db.close();
 });
 
-test('修正故障设备后，旧设备恢复、新设备进入维修态', () => {
+test('维修中回退核对并修正设备后，新旧设备状态随阶段正确变化', () => {
   const { db, service, manager, worker, technician, process, equipment, faultCode } = fixture();
   const other = service.createEquipment({
     standard_name: '真正故障的机器', category: '生产主机', type_code: 'EXT', key_spec: '110',
@@ -138,9 +141,12 @@ test('修正故障设备后，旧设备恢复、新设备进入维修态', () =>
   assert.equal(statusOf(service, equipment.id), 'REPAIRING');
   assert.equal(statusOf(service, other.id), 'ACTIVE');
 
+  service.transitionWorkOrder(id, { to_status: 'ARRIVED' }, technician);
   service.correctWorkOrderEquipment(id, { equipment_id: other.id, reason: '到场后发现是隔壁那台' }, technician);
   assert.equal(statusOf(service, equipment.id), 'ACTIVE', '报错的那台应恢复，不能卡在维修中');
-  assert.equal(statusOf(service, other.id), 'REPAIRING', '实际故障设备应进入维修中');
+  assert.equal(statusOf(service, other.id), 'REPORTED', '核对阶段的实际故障设备应为已报修');
+  service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, technician);
+  assert.equal(statusOf(service, other.id), 'REPAIRING', '重新开始维修后实际故障设备应进入维修中');
   db.close();
 });
 

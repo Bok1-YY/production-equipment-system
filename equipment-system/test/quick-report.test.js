@@ -131,23 +131,22 @@ test('技术员补故障分类：故障现象被重写，普工原话仍留在�
   db.close();
 });
 
-test('没补故障码就结不了单', () => {
+test('没补故障码就不能从核对阶段开始维修', () => {
   const { db, service, worker, technician, installed } = fixture();
   const created = service.createWorkOrder({
     equipment_id: installed.id, description: '3号挤出机不出料了',
   }, worker).work_order;
 
   service.assignWorkOrder(created.id, {}, technician);
-  for (const status of ['ARRIVED', 'IN_PROGRESS']) {
-    service.transitionWorkOrder(created.id, { to_status: status }, technician);
-  }
-  service.updateRepairDetail(created.id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '空转10分钟正常出料' }, technician);
-  service.transitionWorkOrder(created.id, { to_status: 'TRIAL_RUN' }, technician);
-
-  assert.throws(() => service.transitionWorkOrder(created.id, { to_status: 'COMPLETED' }, technician),
-    /必须用「确认故障分类」/, '报修时放开了故障码，结单这一关就必须收回来');
+  service.transitionWorkOrder(created.id, { to_status: 'ARRIVED' }, technician);
+  assert.throws(() => service.transitionWorkOrder(created.id, { to_status: 'IN_PROGRESS' }, technician),
+    /核对报修信息.*故障分类/, '分类应在开始维修前收口');
 
   service.classifyWorkOrder(created.id, { fault_code_id: codeByName(service, 'ME-BRG-NOISE').id }, technician);
+  service.transitionWorkOrder(created.id, { to_status: 'IN_PROGRESS' }, technician);
+  service.updateRepairDetail(created.id, { diagnosis: '测试诊断', repair_action: '测试维修' }, technician);
+  service.transitionWorkOrder(created.id, { to_status: 'TRIAL_RUN' }, technician);
+  service.updateTrialResult(created.id, { trial_result: 'NORMAL' }, technician);
   const done = service.transitionWorkOrder(created.id, { to_status: 'COMPLETED' }, technician).work_order;
   assert.equal(done.status, 'COMPLETED');
   db.close();

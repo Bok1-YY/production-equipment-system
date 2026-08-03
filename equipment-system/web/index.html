@@ -186,10 +186,11 @@
             <div class="quick-fills"><button type="button" class="secondary small" data-quick-fill="运行正常，无异常">运行正常</button><button type="button" class="secondary small" data-quick-fill="已按点润滑保养">已润滑保养</button><button type="button" class="secondary small" data-quick-fill="已紧固松动部位">已紧固</button></div>
             <label class="check"><input type="checkbox" name="has_issue" id="patrol-has-issue">发现问题，需要跟进</label>
             <div class="photo-field">
-              <div class="photo-field-head"><span>现场照片</span><label class="button-link file-button small">拍照/选图<input type="file" accept="image/*" capture="environment" multiple data-photo-input="patrol"></label></div>
+              <div class="photo-field-head"><span>现场照片* <em>必须现场拍摄，自动添加水印</em></span><button type="button" class="secondary small" id="open-patrol-camera">打开相机</button></div>
+              <input type="file" accept="image/*" capture="environment" id="patrol-camera-fallback" hidden>
               <div class="photo-grid" data-photo-grid="patrol"></div>
             </div>
-            <button>提交巡检记录</button>
+            <button type="submit" id="patrol-submit" disabled>请先拍一张现场照片</button>
           </form>
           <div class="card table-card"><div class="card-head"><h2>巡检记录</h2><span id="patrol-count" class="pill"></span></div><div id="patrol-list" class="stack-list"></div></div>
         </div>
@@ -281,9 +282,10 @@
       <section class="view" id="view-reports">
         <div class="page-title"><div><p class="eyebrow">维修 · 停机 · 点检 · 保养</p><h1>运营报表</h1></div><div class="toolbar" data-mobile-toolbar="运营报表操作"><label data-mobile-primary>开始<input type="date" id="report-start"></label><label data-mobile-primary>结束<input type="date" id="report-end"></label><button id="load-report" data-mobile-primary>查询</button><a class="button-link" id="export-report" href="/api/reports/operations.xlsx" data-mobile-overflow download>导出Excel</a></div></div>
         <div class="metrics" id="report-metrics"></div>
+        <div class="card table-card" style="margin-bottom:16px"><div class="card-head"><h2>产线故障排行</h2><span class="hint">点击产线查看关联工单</span></div><div class="table-wrap"><table><thead><tr><th>产线</th><th>故障次数</th><th>停机分钟</th></tr></thead><tbody id="report-lines"></tbody></table></div></div>
         <div class="split">
-          <div class="card table-card"><div class="card-head"><h2>故障排行</h2></div><div class="table-wrap"><table><thead><tr><th>故障</th><th>次数</th><th>停机分钟</th></tr></thead><tbody id="report-faults"></tbody></table></div></div>
-          <div class="card table-card"><div class="card-head"><h2>设备故障排行</h2></div><div class="table-wrap"><table><thead><tr><th>设备</th><th>次数</th><th>停机分钟</th></tr></thead><tbody id="report-equipment"></tbody></table></div></div>
+          <div class="card table-card"><div class="card-head"><h2>故障类别排行</h2><span class="hint">点击类别查看关联工单</span></div><div class="table-wrap"><table><thead><tr><th>故障类别</th><th>故障次数</th><th>停机分钟</th></tr></thead><tbody id="report-faults"></tbody></table></div></div>
+          <div class="card table-card"><div class="card-head"><h2>设备故障排行</h2><span class="hint">点击设备查看关联工单</span></div><div class="table-wrap"><table><thead><tr><th>设备</th><th>发生时产线</th><th>故障次数</th><th>停机分钟</th></tr></thead><tbody id="report-equipment"></tbody></table></div></div>
         </div>
         <div class="card table-card" style="margin-top:16px"><div class="card-head"><h2>点检保养达成</h2></div><div class="table-wrap"><table><thead><tr><th>类型</th><th>应执行</th><th>已执行</th><th>异常</th><th>逾期</th></tr></thead><tbody id="report-tasks"></tbody></table></div></div>
       </section>

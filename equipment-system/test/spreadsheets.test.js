@@ -10,6 +10,7 @@ const {
   equipmentTemplateBuffer,
   parseCompositionWorkbook,
   parseEquipmentWorkbook,
+  operationalReportBuffer,
 } = require('../src/spreadsheets');
 const { openDatabase } = require('../src/db');
 const { EquipmentService } = require('../src/service');
@@ -39,6 +40,25 @@ test('产线组合XLSX模板包含填写页和说明页，并可直接预览', a
   assert.equal(rows.length, 2);
   assert.equal(rows[0].position_code, 'YSM-L01-EX-P01');
   assert.equal(rows[1].equipment_name, '');
+});
+
+test('运营报表导出包含产线、故障类别及设备发生时产线', async () => {
+  const buffer = await operationalReportBuffer({
+    range: { start: '2026-07-01T00:00:00.000Z', end: '2026-08-01T00:00:00.000Z' },
+    totals: {},
+    lines: [{ line_code: 'YSM-L01', line_name: '一号产线', fault_count: 3, downtime_minutes: 60 }],
+    fault_categories: [{ category: '电气故障', fault_count: 2, downtime_minutes: 30 }],
+    equipment: [{ code: 'EXT-A-0001', standard_name: '挤出机', line_code: 'YSM-L01', line_name: '一号产线', fault_count: 2, downtime_minutes: 30 }],
+    technicians: [],
+    tasks: [],
+  });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  assert.ok(workbook.getWorksheet('产线故障排行'));
+  assert.ok(workbook.getWorksheet('故障类别排行'));
+  assert.equal(workbook.getWorksheet('故障排行'), undefined);
+  const equipmentHeaders = workbook.getWorksheet('设备故障排行').getRow(1).values;
+  assert.ok(equipmentHeaders.includes('发生时产线名称'));
 });
 
 test('现场设备命名建议表可由台账导入器直接读取并识别待核实行', {

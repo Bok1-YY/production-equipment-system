@@ -95,6 +95,11 @@ label.check input { width: auto; }
 label.bottom { padding-top: 23px; }
 .hint { color: var(--muted); font-size: 12px; margin: 0; line-height: 1.5; }
 .table-card { overflow: hidden; }
+.clickable-row { cursor: pointer; transition: background .15s ease; }
+.clickable-row:hover, .clickable-row:focus { background: #edf5ef; outline: none; }
+.clickable-row:focus-visible { box-shadow: inset 0 0 0 2px var(--green); }
+.clickable-card { cursor: pointer; transition: border-color .15s ease, background .15s ease; }
+.clickable-card:hover, .clickable-card:focus { border-color: var(--green); background: #f3f8f4; outline: none; }
 .card-head { min-height: 62px; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
 .card-head h2 { margin: 0; }
 .table-wrap { overflow: auto; max-height: 650px; }
@@ -165,6 +170,12 @@ body.mobile-action-open { overflow: hidden; }
 .inline-form { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 10px; }
 .inline-form .wide { grid-column: 1 / -1; }
 .inline-form button { align-self: end; }
+.trial-form { display: grid; gap: 12px; }
+.trial-options { display: grid; gap: 8px; }
+.trial-option { display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; background: white; cursor: pointer; }
+.trial-option input { width: auto; margin-top: 3px; }
+.trial-option span { display: grid; gap: 2px; }
+.trial-option small { color: var(--muted); }
 .tree-card { overflow: hidden; }
 .organization-tree { padding: 14px 18px 24px; min-height: 360px; }
 .tree-node { margin: 4px 0; }
@@ -315,6 +326,14 @@ body.mobile-action-open { overflow: hidden; }
 .lightbox-body img { max-width: 100%; max-height: 78vh; border-radius: 10px; background: white; }
 .lightbox-body p { color: #cfe0d6; font-size: 12px; margin: 10px 0 0; }
 .lightbox-body .drawer-close { top: -46px; right: 0; }
+.camera-drawer { display: grid; place-items: center; grid-template-columns: 1fr; background: rgba(9,18,13,.82); }
+.camera-drawer .drawer-backdrop { position: absolute; inset: 0; background: transparent; }
+.camera-panel { position: relative; z-index: 1; width: min(94vw, 760px); max-height: 94vh; overflow: auto; padding: 20px; border-radius: 14px; background: var(--bg); }
+.camera-panel h2 { margin: 0 0 12px; }
+.camera-preview { overflow: hidden; border-radius: 12px; background: #050805; aspect-ratio: 4 / 3; }
+.camera-preview video { width: 100%; height: 100%; display: block; object-fit: contain; }
+.camera-actions { display: flex; gap: 10px; margin-top: 12px; }
+.camera-actions button { flex: 1; }
 
 /* 工单评价 */
 .stars-view { display: inline-flex; align-items: center; gap: 1px; color: #d8ddd9; font-size: 15px; line-height: 1; }

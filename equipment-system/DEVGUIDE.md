@@ -10,6 +10,8 @@
 
 ### 0.1 一键启动（日常用法）
 
+Windows 只保留一个用户入口：桌面的 `一键启动全功能设备系统.bat`。它统一启动电脑页面、手机局域网访问、扫码、巡检拍照和报修通知所需的后端；首次运行会申请一次 Windows 私有网络防火墙权限。
+
 Linux 桌面环境可以从项目目录运行 `一键启动设备系统.sh`。它会：
 
 1. 检查 Node 版本（**必须 ≥ 22.5**，因为用了 `node:sqlite`）；
@@ -53,7 +55,7 @@ npm run dev          # node --watch，改完自动重启
 ### 0.5 跑测试
 
 ```bash
-npm test                                   # node --test，当前 139 项
+npm test                                   # node --test，当前 148 项（147 通过，1 项缺现场真实台账时跳过）
 node scripts/http-smoke.js                 # HTTP 冒烟（需服务在跑）
 SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码后
 ```
@@ -109,7 +111,7 @@ SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码
 ```
 equipment-system/
 │  ── 后端 ──
-├── src/server.js        HTTP 层：会话解析、96 条路由、静态服务、错误映射
+├── src/server.js        HTTP 层：会话解析、98 条路由、静态服务、错误映射
 ├── src/service.js       ★ 全部业务：EquipmentService，130 个方法
 ├── src/domain.js        纯逻辑：文本/编号校验、设备编码格式、工单状态机、
 │                        设备状态常量（手工 4 态 vs 系统 2 态）、角色断言
@@ -125,7 +127,7 @@ equipment-system/
 ├── web/app.js           ★ 全部前端逻辑（无框架、无模块化、按顺序执行）
 ├── web/styles.css       设计令牌（:root 变量）+ 组件样式 + 760px 移动端断点
 │
-│  ── 测试（node --test，139 项）──
+│  ── 测试（node --test，148 项）──
 ├── test/domain.test.js            编码格式与状态机（纯函数）
 ├── test/service.test.js           台账/编码/组合/导入/结构删除/工单/层级字段（12 项）
 ├── test/auth.test.js              密码/会话/三级/成员管理/工单可见性（11 项）
@@ -240,24 +242,27 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
 
 ### 3.4.1 阶段模型：`POST_ARRIVAL_STATUSES` 与 `WORK_ORDER_STAGES`
 
-**到场之前判断不了是哪台设备、什么故障，更不会用掉零件。** 所以这四个操作都要求工单已到场（`POST_ARRIVAL_STATUSES`），共用 `service.assertArrived()`：
+**到场核对和开始维修是两道不同的业务边界。** 当前不再用一个宽泛的“到场后都能改”规则：
 
-| 方法 | 界面区块 | 解锁时机 |
+| 方法 | 界面区块 | 服务端阶段限制 |
 |---|---|---|
-| `classifyWorkOrder` | 确认故障分类 | 已到场 |
-| `correctWorkOrderEquipment` | 修正故障设备 | 已到场 |
-| `updateRepairDetail` | 诊断与维修记录 | 已到场（界面上等到"维修中"才显示） |
+| `classifyWorkOrder` | 核对报修信息 / 确认故障分类 | 技术员仅 `ARRIVED`；管理员可在 `SUBMITTED` / `ACCEPTED` 提前纠错 |
+| `correctWorkOrderEquipment` | 报修信息有误，更改设备？ | 同上 |
+| `updateRepairDetail` | 诊断原因与维修方法 | `IN_PROGRESS` / `WAITING_PARTS` / `OUTSOURCED` / `TRIAL_RUN` / 历史 `PENDING_REVIEW` |
 | `addWorkOrderPart` | 使用零件 | 同上 |
+| `updateTrialResult` | 试运行结果 | 仅 `TRIAL_RUN` |
 
-`assertArrived()` 里**管理员不受限**——把明显的误报在派单前改掉是合理的。技术员则同时要过接单人校验。
+故障设备和分类统一走 `assertReportInfoStage()`。维修开始后若发现信息不对，不能直接在维修记录旁边修改，必须先沿状态机回到 `ARRIVED`；`IN_PROGRESS` / `WAITING_PARTS` / `OUTSOURCED` 都允许回退。这样界面隐藏不是唯一约束，直接调接口也跨不过去。开始维修时服务端还会再次检查 `final_equipment_id` 和 `fault_code_id`，两项未确认就拒绝进入 `IN_PROGRESS`。
+
+维修记录和零件走 `assertRepairStarted()`，到场但尚未开工时不能提前填写。`assertArrived()` 仍供工单照片等“到场后但不要求开工”的通用操作使用。
 
 `WORK_ORDER_STAGES` 是有序阶段表，由 `/api/meta` 下发给界面画步骤条。等零件/外协/待审核是分支，用 `includes` 并到所属阶段，不占独立步骤。**前端不许再抄一份**——抄了就会和状态机走散（§3.4 那条已经踩过一次）。
 - **权限**：`CANCELLED` 要求管理员；其余（含 `COMPLETED`）技术员即可。结单权限 2026-07-26 从管理员下放给技术员，验收改由报修人的评价承担。
 - `COMPLETED` 前有**五道硬校验**，权限下放给技术员之后没有第二个人把关，这五道更不能丢：
-  - `trial_result` 非空（修完得试过）；
+  - `trial_result` 必须命中 `TRIAL_RESULTS`。`NORMAL` 可结单；`OPERABLE_WITH_ISSUES` 可结单但强制 `trial_issue_description`；`UNABLE_TO_RUN` 不可结单，必须返回维修。结果只能由 `PUT /api/work-orders/:id/trial-result` 在 `TRIAL_RUN` 阶段写入，每次重新进入试运行都会清空旧结果，防止沿用上次结论；
   - **`final_equipment_id` 非空**——工单不挂设备就结掉，设备状态联动、维修履历和 MTBF 之类的统计全都落空。报修时允许"无法判断具体设备"，但修完了技术员一定知道自己修的是哪台，用「修正故障设备」认领即可。
   - **`fault_code_id` 非空**（2026-07-26 新增）——报修时故障码改成了选填（给普工减负，见 §3.6），代价必须在这里收回来：没有码，故障统计就等于没做。技术员用「确认故障分类」补上。
-  - **`diagnosis` 非空**——必须留下诊断结论；
+  - **`diagnosis` 非空**——界面名称为「诊断原因」。迁移 `mergeDiagnosisAndRootCause()` 会把旧 `root_cause` 一次性合入该字段并清空旧值，旧列暂时保留做备份兼容；
   - **`repair_action` 非空**——必须说明实际采取的维修措施。
   - 五道都对 `CANCELLED` 和撤回**豁免**，否则误报产生的无主工单会永远挂着。这一点每次加新校验都要重新想一遍。
 - **时间戳**：`assigned_at` 在 `assignWorkOrder` 里落（`COALESCE` 保护，转派不覆盖首次接单时刻）、`arrived_at` 在 `to === 'ARRIVED'` 时落、`started_at` 在 `IN_PROGRESS`、`completed_at` 在 `COMPLETED`。四个时刻单调递增，"报修→接单→到场→完成"四段时长才算得出来。
@@ -267,10 +272,11 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
 
 ### 3.5 工单评价
 
-`work_order_reviews`：一单一评（`work_order_id UNIQUE`），三个维度各 1~5 星 + 选填评论，**可以改**。
+`work_order_reviews`：一单一评（`work_order_id UNIQUE`），三个维度各 1~5 星 + 选填评论，**可以改**。评价还可附照片，附件目标类型为 `WORK_ORDER_REVIEW`。
 
 - 存 `technician` 姓名**快照**：技术员离职停用之后，历史评价和综合分仍然要算得出来。
 - 「待评价」不是新状态，是 `LEFT JOIN` 出来的 `has_review` 布尔值。工单终态仍然只有 `COMPLETED` / `CANCELLED`——评价没交不会让工单卡住。
+- 评价照片只允许评价人本人和管理员读取；技术员既看不到评价正文，也不能从附件接口旁路取图。`work_order_history` 只写“报修人已提交评价”，严禁把评分、评论或照片名放进技术员可见的时间线。
 - `reopened_from_work_order_id`（在 `work_orders` 上）：重新报修时指向原单。**几天内就重新报修，本身就是"上次没修好"的信号**。
 
 可见性规则见 §4.1，那里有一个已经踩过的坑。
@@ -286,7 +292,7 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
   - `is_common`：进不进普工报修页的「常见故障」快捷按钮。`frequentFaultCodes()` 先按该设备类型的历史频次排，**库里还没有工单时回退到 `is_common`**——否则第一天打开报修页是一排空按钮。加这个标记而不是硬编码"综合类优先"，是因为类别名管理员可以改，magic string 会静默失效。
     - `ensureColumn` 加列后有一次 `backfillCommonFaultCodes()`：只动 `is_seeded=1` 的行，且**任意一条已为 1 就不再补**——否则管理员取消掉的标记会在重启后复活（和"删掉的预置项不复活"同一个原则）。
   - 已被工单引用的只能停用不能删。
-- `attachments`：多态附件表（`target_type` 为 `WORK_ORDER` / `PATROL` / `TASK`）。文件落 `data/attachments/YYYYMM/<32位随机名>.<ext>`，库里只存相对路径。
+- `attachments`：多态附件表（`target_type` 为 `WORK_ORDER` / `PATROL` / `TASK` / `WORK_ORDER_REVIEW`）。文件落 `data/attachments/YYYYMM/<32位随机名>.<ext>`，库里只存相对路径。
   - **服务端只认魔数字节**（JPEG `FF D8 FF`、PNG `89 50 4E 47`、WEBP `RIFF....WEBP`），绝不信前端声明的 mime——否则改个扩展名就能上传任意文件。
   - 单张 ≤2MB、每个对象 ≤6 张、解码后合计 ≤12MB；base64 做严格往返校验。前端先用 canvas 压到长边 1600px 再提交。
   - 落盘和写库在同一个 `transaction()` 里；任何一张失败都会 `unlinkSync` 清掉同批已写下的文件，不留孤儿。
@@ -297,6 +303,8 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
 `patrol_records` 保留为技术员的快速现场巡查：扫码选设备 + 拍照 + 必填一段 `findings`。正式的逐项点检走下一节的结构化任务，二者不混用。
 
 只给 `equipment_id` 不给 `process_id` 时，会按当前安装关系自动带出所在工序。`convertPatrolToWorkOrder()` 一键转维修：巡检发现写进工单 `description`，`work_order_id` 回写实现双向关联，工单历史里留 `FROM_PATROL` 事件，并触发设备状态联动。
+
+巡检服务端强制至少一张附件；Android App 进一步通过自定义 `PatrolCameraPlugin` 调 `MediaStore.ACTION_IMAGE_CAPTURE`，使用 `FileProvider` 接收新拍 JPEG，不给相册选择入口。前端收到 Base64 后必须直接 `atob` 解码成 `Blob`，不能 `fetch(data:)`：页面 CSP 的 `connect-src 'self'` 会拒绝后者。随后 canvas 写入设备、巡检人和拍摄时间水印。非原生浏览器只有在 `getUserMedia` 可用时才允许巡检拍照，否则提示使用最新版 Android App，不能退回文件上传绕过现场要求。
 
 ### 3.8 结构化点检与保养
 
@@ -365,7 +373,7 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
 
 ---
 
-## 五、后端：`server.js` 的 96 条路由
+## 五、后端：`server.js` 的 98 条路由
 
 ### 5.1 请求流程
 
@@ -544,7 +552,20 @@ token 本身是稳定映射（存在 `qr_mappings`），换地址只需改环境
 - **停机时长双口径**：`started_at`/`completed_at` 自动记录，`downtime_minutes` 由技术员手填，两者可能打架。
 - **变动申请不能撤回**：`CHANGE_STATUSES` 里定义了 `CANCELLED` 但全代码从不使用。
 - **审核用 `prompt()`**：`reviewChange()` 还在用浏览器原生弹窗填驳回原因，看不到申请详情，移动端体验差。
-- **`service.js` 已 3344 行**：目前还能一个文件装下，但成员管理、计划任务、运营报表和履历聚合已形成相对独立的功能组；将来真要拆，优先按这些边界拆。
+- **`service.js` 已 3504 行**：目前还能一个文件装下，但成员管理、计划任务、运营报表和履历聚合已形成相对独立的功能组；将来真要拆，优先按这些边界拆。
+
+### 6.10 Android 改动必须跑 APK，不以“能打包”为验收
+
+Web 冒烟不能覆盖 Android 权限、Intent、FileProvider、系统相机和 WebView CSP。2026-08-04 的真实模拟器测试连续挡下两个只在 APK 中出现的问题：`<input capture>` 在 Android 15 打开了 Photo Picker 而不是相机；原生相机回传后又被 CSP 拒绝 `fetch(data:)`。因此涉及扫码、拍照、通知、服务器切换或 Capacitor 桥的改动必须完成以下最小闭环：
+
+1. `cap sync android` 后运行 Android 单元测试、`lintDebug`、`assembleDebug` 和 `assembleDebugAndroidTest`；
+2. 在真机或带硬件加速的 Android 模拟器安装 APK，确认冷启动和登录；
+3. 实际点击权限按钮和系统组件，不只调用插件方法；
+4. 拍照后必须回到应用，看到带水印缩略图且业务提交按钮解锁；
+5. 用 `adb shell dumpsys activity activities` 核对前台是相机 `CaptureActivity`，不是 Photo Picker；
+6. 直接运行 instrumentation，看到 `OK` 后才算通过。
+
+Windows 没有 WSL 也不能成为不测的理由：可以使用便携 JDK 21、Android command-line tools、WHPX 模拟器。`scripts/start-android-runtime-test-server.ps1` 只监听 `127.0.0.1` 并把数据库限制在 `%TEMP%\ysm-android-runtime-test`；模拟器专用构建临时指向 `http://10.0.2.2:8787`。**测试完必须把 `mobile/capacitor.config.json` 恢复为实际局域网地址，再同步并重建交付 APK。** `scripts/seed-android-runtime-fixture.js` 只用于该隔离库，文件名刻意不以 `test.js` 结尾，避免被 `node --test` 自动发现。
 
 ---
 
@@ -655,9 +676,10 @@ token 本身是稳定映射（存在 `qr_mappings`），换地址只需改环境
 1. **步骤条**（`stageBar()`）——走过的绿、当前的高亮、没到的灰。回答"我在第几步、还剩几步"。
 2. **当前这一步**（`.stage-block`）——每个阶段**只有一个动词明确的主按钮**：我接这单 / 我到现场了 / 开始维修 / 修完了，转试运行 / 结单。分支（等零件、外协、返工）做成次要按钮。表在 `STAGE_ACTIONS` 和 `STAGE_BRANCHES`。
 3. **问题信息** —— 一直可见。
-4. **到场后解锁**：确认故障分类、修正故障设备。
-5. **开始维修后解锁**：诊断与维修记录、使用零件。
-6. **结单前检查**（`TRIAL_RUN` 阶段）—— 五道硬校验（故障设备、故障分类、诊断、维修措施、试运行）各一行，✓/✗ 一眼看到，缺项写明"去哪补"，按钮禁用并显示"还差 N 项才能结单"。
+4. **已到场：核对报修信息** —— 故障分类与“报修信息有误，更改设备？”合并在同一区块；两项确认后才能开始维修。
+5. **开始维修后解锁**：诊断原因、维修方法和使用零件；报修信息区块不再重复出现。需要纠错时用单独按钮返回 `ARRIVED`，再修改并重新开工。
+6. **待试运行**：用单选项保存结构化结果。正常运行可结单；可运行但仍存在问题必须填写说明；无法运行只能返回维修。
+7. **结单前检查**（`TRIAL_RUN` 阶段）—— 五道硬校验（故障设备、故障分类、诊断原因、维修措施、试运行）各一行，✓/✗ 一眼看到，缺项写明"去哪补"，按钮禁用并显示"还差 N 项才能结单"。
 
 三条实现约束：
 
@@ -668,6 +690,12 @@ token 本身是稳定映射（存在 `qr_mappings`），换地址只需改环境
 ### 9.6 设备档案抽屉（`openEquipmentProfile`）
 
 四个标签页由 `profileBasicTab` / `profileMovementTab` / `profileRepairTab` / `profileAuditTab` 分别渲染，数据一次性来自 `GET /api/equipment/:id/history`。基本信息页管理员可编辑、技术员只读；状态下拉只列手工四态，设备正在维修时标题改成"结单后的状态"并给出说明。
+
+### 9.7 运营报表下钻
+
+`operationalReport()` 同时返回三组排行：`lines`（产线故障排行）、`fault_categories`（故障类别排行）、`equipment`（设备故障排行，带故障发生时的 `line_name`）。不要用设备“当前产线”回填历史排行，设备调线后会篡改过去的统计口径。
+
+三个表格行都带 `data-action="report-drilldown"`，鼠标、Enter 和空格都能打开抽屉。抽屉调用 `GET /api/reports/operations/work-orders`，按 `kind=line|fault_category|equipment` 及日期范围返回关联工单，再复用 `openWorkOrder()` 打开完整详情。下钻端点和报表本体使用相同管理员权限，不能因为它只是“详情”就放宽数据范围。Excel 导出必须与页面保持同样的三组排行和列定义。
 
 ---
 
@@ -693,6 +721,8 @@ token 本身是稳定映射（存在 `qr_mappings`），换地址只需改环境
 Android 正式包通过 `mobile/scripts/build-production.sh https://正式域名` 构建：仅接受 HTTPS，release 清单禁用明文流量与系统备份，签名、包名和版本全部由环境变量注入。后台维修通知使用独立 7 天设备令牌并由 AndroidKeyStore 加密保存，不保存网页会话 Cookie。
 
 `PUBLIC_BASE_URL` 与 `YSM_TRUSTED_ORIGIN` 必须使用同一正式 HTTPS 域名；它同时决定设备和工序二维码的永久地址。域名未确定前不得批量打印二维码。正式构建还必须提供 release keystore，并在发布前执行 Android release 单元测试、lint、APK 和 AAB 构建。
+
+局域网测试包与正式包是两条配置线：测试包可使用可信私网 HTTP，并通过 App 内服务器设置切换地址；正式包只允许 HTTPS。Windows 交付测试包时要提高 `ysmVersionCode`，并复用电脑已有的调试 keystore，否则手机无法覆盖安装旧测试版。交付前用 `apksigner verify --verbose --print-certs`、`aapt dump badging` 和 SHA-256 同时核对签名、包名、版本及文件一致性。
 
 ---
 

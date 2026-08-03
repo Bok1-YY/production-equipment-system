@@ -17,9 +17,9 @@ const WORK_ORDER_TRANSITIONS = Object.freeze({
   SUBMITTED: new Set(['CANCELLED']),
   ACCEPTED: new Set(['ARRIVED', 'CANCELLED']),
   ARRIVED: new Set(['IN_PROGRESS', 'CANCELLED']),
-  IN_PROGRESS: new Set(['WAITING_PARTS', 'OUTSOURCED', 'TRIAL_RUN', 'CANCELLED']),
-  WAITING_PARTS: new Set(['IN_PROGRESS', 'CANCELLED']),
-  OUTSOURCED: new Set(['IN_PROGRESS', 'CANCELLED']),
+  IN_PROGRESS: new Set(['ARRIVED', 'WAITING_PARTS', 'OUTSOURCED', 'TRIAL_RUN', 'CANCELLED']),
+  WAITING_PARTS: new Set(['ARRIVED', 'IN_PROGRESS', 'CANCELLED']),
+  OUTSOURCED: new Set(['ARRIVED', 'IN_PROGRESS', 'CANCELLED']),
   // 试运行完由技术员直接结单。原来这里要先进 PENDING_REVIEW 等管理员验收，
   // 2026-07-26 改为「技术员结单 + 报修人评价」，验收由评价承担。
   TRIAL_RUN: new Set(['IN_PROGRESS', 'COMPLETED', 'CANCELLED']),
@@ -33,8 +33,7 @@ const WORK_ORDER_TRANSITIONS = Object.freeze({
 // 报修人可以自己撤回的状态：技术员还没到现场。到场之后再撤就是白跑一趟。
 const WITHDRAWABLE_STATUSES = Object.freeze(['SUBMITTED', 'ACCEPTED']);
 
-// 技术员已经到现场的状态。到场之前判断不了是哪台设备、什么故障，更不会用掉零件，
-// 所以「修正故障设备」「确认故障分类」「诊断与维修记录」「使用零件」四个操作都要求到场。
+// 技术员已经到现场的状态。核对设备和故障分类必须到场；维修记录和零件还会额外要求已经开工。
 const POST_ARRIVAL_STATUSES = Object.freeze(['ARRIVED', 'IN_PROGRESS', 'WAITING_PARTS', 'OUTSOURCED', 'TRIAL_RUN', 'PENDING_REVIEW']);
 
 // 工单的有序阶段，供界面画步骤条用（"我在第几步、还剩几步"）。
@@ -54,6 +53,11 @@ const REVIEW_DIMENSIONS = Object.freeze([
   { key: 'quality', name: '维修质量' },
   { key: 'attitude', name: '服务态度' },
   { key: 'speed', name: '响应速度' },
+]);
+const TRIAL_RESULTS = Object.freeze([
+  { value: 'NORMAL', name: '正常运行', closable: true },
+  { value: 'OPERABLE_WITH_ISSUES', name: '可运行但仍存在问题', closable: true, requires_description: true },
+  { value: 'UNABLE_TO_RUN', name: '无法运行', closable: false },
 ]);
 const MIN_REVIEW_SCORE = 1;
 const MAX_REVIEW_SCORE = 5;
@@ -176,6 +180,7 @@ module.exports = {
   POST_ARRIVAL_STATUSES,
   REPAIR_EQUIPMENT_STATUSES,
   REVIEW_DIMENSIONS,
+  TRIAL_RESULTS,
   UNDER_REPAIR_WORK_ORDER_STATUSES,
   WITHDRAWABLE_STATUSES,
   WORK_ORDER_STAGES,

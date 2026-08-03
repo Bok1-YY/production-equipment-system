@@ -203,11 +203,12 @@ test('报修、分派、维修记录、零件和审核形成完整历史', () =>
   service.transitionWorkOrder(id, { to_status: 'ARRIVED' }, systemAdmin);
   service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, systemAdmin);
   service.updateRepairDetail(id, {
-    diagnosis: '加热回路断路', root_cause: '接触器烧蚀', repair_action: '更换接触器并紧固线路',
-    trial_result: '连续升温30分钟正常', downtime_minutes: 45, downtime_override_reason: '按现场停机记录修正',
+    diagnosis: '加热回路断路，原因为接触器烧蚀', repair_action: '更换接触器并紧固线路',
+    downtime_minutes: 45, downtime_override_reason: '按现场停机记录修正',
   }, systemAdmin);
   service.addWorkOrderPart(id, { part_name: '交流接触器', specification: 'CJX2-2510', quantity: 1, unit: '只', source: '设备科备件柜' }, systemAdmin);
   service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, systemAdmin);
+  service.updateTrialResult(id, { trial_result: 'NORMAL' }, systemAdmin);
   const completed = service.transitionWorkOrder(id, { to_status: 'COMPLETED', note: '验收正常' }, systemAdmin);
   assert.equal(completed.work_order.status, 'COMPLETED');
   assert.equal(completed.parts.length, 1);

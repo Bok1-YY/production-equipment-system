@@ -2,6 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { openDatabase, DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD } = require('../src/db');
 const { EquipmentService } = require('../src/service');
 const { levelToRole } = require('../src/auth');
@@ -39,13 +42,16 @@ function repairAndClose(f, tech = f.technician, reporter = f.worker) {
   for (const status of ['ARRIVED', 'IN_PROGRESS']) {
     f.service.transitionWorkOrder(id, { to_status: status }, tech);
   }
-  f.service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '空载试运行正常' }, tech);
+  f.service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修' }, tech);
   f.service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, tech);
+  f.service.updateTrialResult(id, { trial_result: 'NORMAL' }, tech);
   f.service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, tech);
   return id;
 }
 
 const review = (score = 5) => ({ quality_score: score, attitude_score: score, speed_score: score });
+const jpeg = () => Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]).toString('base64');
+const photo = (name = '评价照片.jpg') => ({ content_base64: jpeg(), name });
 
 test('技术员现在能自己结单，试运行完直通完成，不再需要管理员验收', () => {
   const f = fixture();
@@ -56,8 +62,9 @@ test('技术员现在能自己结单，试运行完直通完成，不再需要�
   for (const status of ['ARRIVED', 'IN_PROGRESS']) {
     f.service.transitionWorkOrder(id, { to_status: status }, f.technician);
   }
-  f.service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '正常' }, f.technician);
+  f.service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修' }, f.technician);
   f.service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, f.technician);
+  f.service.updateTrialResult(id, { trial_result: 'NORMAL' }, f.technician);
 
   const closed = f.service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, f.technician);
   assert.equal(closed.work_order.status, 'COMPLETED');
@@ -75,11 +82,11 @@ test('结单前仍然必须填试运行结果——权限放开了这道自检�
   for (const status of ['ARRIVED', 'IN_PROGRESS', 'TRIAL_RUN']) {
     f.service.transitionWorkOrder(id, { to_status: status }, f.technician);
   }
-  assert.throws(() => f.service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, f.technician), /必须填写试运行结果/);
+  assert.throws(() => f.service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, f.technician), /必须选择有效的试运行结果/);
   f.db.close();
 });
 
-test('工单没挂设备就结不了单——否则维修记录落不到任何设备账上', () => {
+test('工单没挂设备就不能开始维修——否则维修记录落不到任何设备账上', () => {
   const f = fixture();
   // 报修时选了"无法判断具体设备"
   const id = f.service.createWorkOrder({
@@ -88,17 +95,16 @@ test('工单没挂设备就结不了单——否则维修记录落不到任何�
   assert.equal(f.service.getWorkOrder(id).work_order.final_equipment_id, null);
 
   f.service.assignWorkOrder(id, {}, f.technician);
-  for (const status of ['ARRIVED', 'IN_PROGRESS']) {
-    f.service.transitionWorkOrder(id, { to_status: status }, f.technician);
-  }
-  f.service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '正常' }, f.technician);
-  f.service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, f.technician);
+  f.service.transitionWorkOrder(id, { to_status: 'ARRIVED' }, f.technician);
+  assert.throws(() => f.service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, f.technician),
+    /核对报修信息.*实际故障设备/);
 
-  assert.throws(() => f.service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, f.technician),
-    /必须先用「修正故障设备」/);
-
-  // 修正设备之后就能结了
+  // 核对设备之后才能开始维修和结单
   f.service.correctWorkOrderEquipment(id, { equipment_id: f.equipment.id, reason: '到场后确认是这台' }, f.technician);
+  f.service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, f.technician);
+  f.service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修' }, f.technician);
+  f.service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, f.technician);
+  f.service.updateTrialResult(id, { trial_result: 'NORMAL' }, f.technician);
   const closed = f.service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, f.technician);
   assert.equal(closed.work_order.status, 'COMPLETED');
   assert.equal(closed.work_order.final_equipment_id, f.equipment.id);
@@ -141,7 +147,7 @@ test('停在旧“待审核”状态的历史工单仍然结得掉', () => {
   for (const status of ['ARRIVED', 'IN_PROGRESS']) {
     f.service.transitionWorkOrder(id, { to_status: status }, f.technician);
   }
-  f.service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修', trial_result: '正常' }, f.technician);
+  f.service.updateRepairDetail(id, { diagnosis: '测试诊断', repair_action: '测试维修' }, f.technician);
   // 手工造出改造前才会出现的状态
   f.db.prepare("UPDATE work_orders SET status='PENDING_REVIEW' WHERE id=?").run(id);
   assert.doesNotThrow(() => f.service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, f.technician),
@@ -213,6 +219,35 @@ test('技术员看不到单条评价，报修人和管理员看得到', () => {
   // 不相干的普工连工单本身都看不到（既有的可见性规则），比"看得到工单但看不到评价"更严
   assert.throws(() => f.service.getWorkOrder(id, f.other), /只能查看自己报修的工单/);
   f.db.close();
+});
+
+test('评价照片独立保存，只有评价人和管理员可以查看', () => {
+  const f = fixture();
+  const attachmentRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ysm-review-'));
+  f.service.attachmentRoot = attachmentRoot;
+  const id = repairAndClose(f);
+  const created = f.service.reviewWorkOrder(id, {
+    ...review(4), attachments: [photo('修后仍渗油.jpg')],
+  }, f.worker);
+  assert.equal(created.attachments.length, 1);
+  const attachmentId = created.attachments[0].id;
+  assert.doesNotThrow(() => f.service.attachmentFile(attachmentId, f.worker));
+  assert.doesNotThrow(() => f.service.attachmentFile(attachmentId, f.manager));
+  assert.throws(() => f.service.attachmentFile(attachmentId, f.technician), /无权查看评价照片/);
+  assert.throws(() => f.service.attachmentFile(attachmentId, f.other), /无权查看评价照片/);
+  assert.equal(f.service.getWorkOrder(id, f.worker).review.attachments.length, 1);
+  assert.equal(f.service.getWorkOrder(id, f.technician).review, null);
+  assert.equal(f.service.listReviews(f.manager)[0].attachments.length, 1);
+
+  const updated = f.service.reviewWorkOrder(id, { ...review(5), attachments: [photo('补充照片.jpg')] }, f.worker);
+  assert.equal(updated.attachments.length, 2, '修改评价时新照片追加到原照片后面');
+  f.service.deleteAttachment(attachmentId, f.worker);
+  assert.equal(f.service.getWorkOrder(id, f.worker).review.attachments.length, 1);
+  const remainingId = f.service.getWorkOrder(id, f.manager).review.attachments[0].id;
+  f.service.deleteAttachment(remainingId, f.manager);
+  assert.equal(f.service.getWorkOrder(id, f.manager).review.attachments.length, 0, '管理员可以管理评价照片');
+  f.db.close();
+  fs.rmSync(attachmentRoot, { recursive: true, force: true });
 });
 
 test('评分和评论不能从工单历史里漏给技术员', () => {

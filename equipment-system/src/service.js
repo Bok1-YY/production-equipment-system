@@ -9,6 +9,7 @@ const {
   MANUAL_EQUIPMENT_STATUSES,
   POST_ARRIVAL_STATUSES,
   REVIEW_DIMENSIONS,
+  TRIAL_RESULTS,
   UNDER_REPAIR_WORK_ORDER_STATUSES,
   WITHDRAWABLE_STATUSES,
   assertChangeAction,
@@ -40,10 +41,12 @@ const DEFAULT_ATTACHMENT_ROOT = path.join(DEFAULT_DATA_DIR, 'attachments');
 const MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_TARGET = 6;
 const MAX_ATTACHMENTS_TOTAL_BYTES = MAX_ATTACHMENT_BYTES * MAX_ATTACHMENTS_PER_TARGET;
-const ATTACHMENT_TARGETS = new Set(['WORK_ORDER', 'PATROL', 'TASK']);
+const ATTACHMENT_TARGETS = new Set(['WORK_ORDER', 'PATROL', 'TASK', 'WORK_ORDER_REVIEW']);
 const TASK_KINDS = new Set(['INSPECTION', 'MAINTENANCE']);
 const TASK_SCHEDULES = new Set(['DAILY', 'WEEKLY', 'INTERVAL', 'FIXED', 'MANUAL']);
 const TASK_TARGETS = new Set(['PROCESS', 'EQUIPMENT']);
+const TRIAL_RESULT_BY_VALUE = new Map(TRIAL_RESULTS.map((item) => [item.value, item]));
+const REPAIR_RECORD_STATUSES = new Set(['IN_PROGRESS', 'WAITING_PARTS', 'OUTSOURCED', 'TRIAL_RUN', 'PENDING_REVIEW']);
 
 // 只认魔数，不信前端声明的 mime —— 否则改个扩展名就能往服务器上传任意文件。
 const IMAGE_SIGNATURES = [
@@ -312,10 +315,7 @@ class EquipmentService {
     };
   }
 
-  operationalReport(input = {}, context = null) {
-    if (context && Number(context.level) < LEVELS.TECHNICIAN) {
-      throw new DomainError('当前级别无权查看运营报表', 403, 'FORBIDDEN');
-    }
+  operationalReportRange(input = {}) {
     const end = input.end ? new Date(input.end) : new Date();
     const start = input.start ? new Date(input.start)
       : new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -325,8 +325,14 @@ class EquipmentService {
     if (end.getTime() - start.getTime() > 366 * 24 * 60 * 60 * 1000) {
       throw new DomainError('单次报表最多查询366天', 400, 'VALIDATION_ERROR');
     }
-    const startIso = start.toISOString();
-    const endIso = end.toISOString();
+    return { start: start.toISOString(), end: end.toISOString() };
+  }
+
+  operationalReport(input = {}, context = null) {
+    if (context && Number(context.level) < LEVELS.TECHNICIAN) {
+      throw new DomainError('当前级别无权查看运营报表', 403, 'FORBIDDEN');
+    }
+    const { start: startIso, end: endIso } = this.operationalReportRange(input);
     const totals = asObject(this.db.prepare(`
       SELECT COUNT(*) AS work_orders,
         SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed,
@@ -339,24 +345,40 @@ class EquipmentService {
         SUM(CASE WHEN reopened_from_work_order_id IS NOT NULL THEN 1 ELSE 0 END) AS repeat_repairs
       FROM work_orders WHERE reported_at>=? AND reported_at<=?
     `).get(startIso, endIso));
-    const faults = asObjects(this.db.prepare(`
-      SELECT COALESCE(fc.code, 'UNCLASSIFIED') AS code,
+    const lines = asObjects(this.db.prepare(`
+      SELECT l.id AS line_id, l.code AS line_code, l.name AS line_name,
+             COUNT(*) AS fault_count,
+             SUM(COALESCE(wo.downtime_minutes, 0)) AS downtime_minutes
+      FROM work_orders wo
+      JOIN processes p ON p.id=wo.process_id
+      JOIN production_lines l ON l.id=p.line_id
+      WHERE wo.reported_at>=? AND wo.reported_at<=?
+      GROUP BY l.id
+      ORDER BY fault_count DESC, downtime_minutes DESC, l.code LIMIT 50
+    `).all(startIso, endIso));
+    const faultCategories = asObjects(this.db.prepare(`
+      SELECT CASE WHEN fc.id IS NULL THEN '__UNCLASSIFIED__' ELSE fc.category END AS category_key,
              COALESCE(fc.category, '未分类') AS category,
-             COALESCE(fc.part, '') AS part,
-             COALESCE(fc.symptom, wo.fault_symptom) AS symptom,
-             COUNT(*) AS count, SUM(COALESCE(wo.downtime_minutes, 0)) AS downtime_minutes
+             COUNT(*) AS fault_count,
+             SUM(COALESCE(wo.downtime_minutes, 0)) AS downtime_minutes
       FROM work_orders wo LEFT JOIN fault_codes fc ON fc.id=wo.fault_code_id
       WHERE wo.reported_at>=? AND wo.reported_at<=?
-      GROUP BY COALESCE(fc.code, 'UNCLASSIFIED'), COALESCE(fc.category, '未分类'),
-               COALESCE(fc.part, ''), COALESCE(fc.symptom, wo.fault_symptom)
-      ORDER BY count DESC, downtime_minutes DESC LIMIT 50
+      GROUP BY CASE WHEN fc.id IS NULL THEN '__UNCLASSIFIED__' ELSE fc.category END,
+               COALESCE(fc.category, '未分类')
+      ORDER BY fault_count DESC, downtime_minutes DESC, category LIMIT 50
     `).all(startIso, endIso));
     const equipment = asObjects(this.db.prepare(`
-      SELECT e.id, e.code, e.standard_name, COUNT(*) AS fault_count,
+      SELECT e.id AS equipment_id, e.code, e.standard_name,
+             l.id AS line_id, l.code AS line_code, l.name AS line_name,
+             COUNT(*) AS fault_count,
              SUM(COALESCE(wo.downtime_minutes, 0)) AS downtime_minutes
-      FROM work_orders wo JOIN equipment e ON e.id=wo.final_equipment_id
+      FROM work_orders wo
+      JOIN equipment e ON e.id=wo.final_equipment_id
+      JOIN processes p ON p.id=wo.process_id
+      JOIN production_lines l ON l.id=p.line_id
       WHERE wo.reported_at>=? AND wo.reported_at<=?
-      GROUP BY e.id ORDER BY fault_count DESC, downtime_minutes DESC LIMIT 50
+      GROUP BY e.id, l.id
+      ORDER BY fault_count DESC, downtime_minutes DESC, e.code, l.code LIMIT 50
     `).all(startIso, endIso));
     const technicians = asObjects(this.db.prepare(`
       SELECT COALESCE(u.display_name, wo.assignee, '未指派') AS technician,
@@ -384,11 +406,52 @@ class EquipmentService {
     return {
       range: { start: startIso, end: endIso },
       totals,
-      faults,
+      lines,
+      fault_categories: faultCategories,
       equipment,
       technicians,
       tasks,
     };
+  }
+
+  operationalReportWorkOrders(input = {}, context = null) {
+    if (context && Number(context.level) < LEVELS.TECHNICIAN) {
+      throw new DomainError('当前级别无权查看运营报表', 403, 'FORBIDDEN');
+    }
+    const { start: startIso, end: endIso } = this.operationalReportRange(input);
+    const kind = String(input.kind || '');
+    const conditions = ['wo.reported_at>=?', 'wo.reported_at<=?'];
+    const parameters = [startIso, endIso];
+    if (kind === 'line') {
+      conditions.push('l.id=?');
+      parameters.push(positiveId(input.line_id, '产线'));
+    } else if (kind === 'fault_category') {
+      const categoryKey = requireText(input.category_key, '故障类别', 80);
+      if (categoryKey === '__UNCLASSIFIED__') conditions.push('fc.id IS NULL');
+      else {
+        conditions.push('fc.category=?');
+        parameters.push(categoryKey);
+      }
+    } else if (kind === 'equipment') {
+      conditions.push('e.id=?', 'l.id=?');
+      parameters.push(positiveId(input.equipment_id, '设备'), positiveId(input.line_id, '产线'));
+    } else {
+      throw new DomainError('报表下钻类型无效', 400, 'VALIDATION_ERROR');
+    }
+    return asObjects(this.db.prepare(`
+      SELECT wo.id, wo.work_order_no, wo.reported_at, wo.status, wo.fault_symptom,
+             wo.is_downtime, wo.downtime_minutes, wo.assignee,
+             l.id AS line_id, l.name AS line_name, p.name AS process_name,
+             e.id AS equipment_id, e.code AS equipment_code, e.standard_name AS equipment_name,
+             COALESCE(fc.category, '未分类') AS fault_category
+      FROM work_orders wo
+      JOIN processes p ON p.id=wo.process_id
+      JOIN production_lines l ON l.id=p.line_id
+      LEFT JOIN equipment e ON e.id=wo.final_equipment_id
+      LEFT JOIN fault_codes fc ON fc.id=wo.fault_code_id
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY wo.reported_at DESC, wo.id DESC
+    `).all(...parameters));
   }
 
   organization() {
@@ -1861,8 +1924,8 @@ class EquipmentService {
     }
   }
 
-  // 到场之前判断不了是哪台设备、什么故障，更不会用掉零件。管理员不受限——
-  // 把明显的误报在派单前改掉是合理的。
+  // 到场之前判断不了是哪台设备、什么故障。通用的到场校验仍供照片等操作使用；
+  // 报修信息核对和维修记录分别有更严格的阶段校验。
   assertArrived(current, context, action) {
     if (CLOSED_WORK_ORDER_STATUSES.includes(current.status)) {
       throw new DomainError(`已结束工单不能${action}`, 409);
@@ -1870,6 +1933,16 @@ class EquipmentService {
     if (context.role === ROLES.ADMIN) return;
     if (!POST_ARRIVAL_STATUSES.includes(current.status)) {
       throw new DomainError(`要先到现场（把工单推进到「已到场」）才能${action}`, 409, 'NOT_ARRIVED');
+    }
+    this.assertOwnWorkOrder(current, context, action);
+  }
+
+  assertRepairStarted(current, context, action) {
+    if (CLOSED_WORK_ORDER_STATUSES.includes(current.status)) {
+      throw new DomainError(`已结束工单不能${action}`, 409);
+    }
+    if (!REPAIR_RECORD_STATUSES.has(current.status)) {
+      throw new DomainError(`要先开始维修才能${action}`, 409, 'REPAIR_NOT_STARTED');
     }
     this.assertOwnWorkOrder(current, context, action);
   }
@@ -1891,25 +1964,35 @@ class EquipmentService {
     if (current.status === 'PENDING_REVIEW' && to === 'IN_PROGRESS' && !note) {
       throw new DomainError('审核退回必须填写原因', 400);
     }
-    if (to === 'COMPLETED' && !current.trial_result) {
-      throw new DomainError('完成工单前必须填写试运行结果', 409);
+    if (current.status === 'ARRIVED' && to === 'IN_PROGRESS' && !current.final_equipment_id) {
+      throw new DomainError('开始维修前请在「核对报修信息」中确认实际故障设备', 409, 'EQUIPMENT_REQUIRED');
+    }
+    if (current.status === 'ARRIVED' && to === 'IN_PROGRESS' && !current.fault_code_id) {
+      throw new DomainError('开始维修前请在「核对报修信息」中确认故障分类', 409, 'FAULT_CODE_REQUIRED');
+    }
+    const trialResult = TRIAL_RESULT_BY_VALUE.get(current.trial_result);
+    if (to === 'COMPLETED' && current.status !== 'PENDING_REVIEW' && !trialResult) {
+      throw new DomainError('完成工单前必须选择有效的试运行结果', 409, 'TRIAL_RESULT_REQUIRED');
+    }
+    if (to === 'COMPLETED' && current.status !== 'PENDING_REVIEW' && !trialResult.closable) {
+      throw new DomainError('设备无法运行，不能结单，请返回维修继续处理', 409, 'TRIAL_RUN_FAILED');
     }
     // 工单不挂设备就结掉，设备状态联动、维修履历和 MTBF 之类的统计全都落空。
     // 报修时允许"无法判断具体设备"，但修完了技术员一定知道自己修的是哪台。
     if (to === 'COMPLETED' && !current.final_equipment_id) {
       throw new DomainError(
-        '完成工单前必须先用「修正故障设备」指明这次实际维修的是哪台设备，否则这次维修记不到任何设备账上',
+        '完成工单前请返回「核对报修信息」确认实际故障设备，否则这次维修记不到任何设备账上',
         409, 'EQUIPMENT_REQUIRED');
     }
     // 报修时不再强制选故障代码（普工不必在三级分类里翻），代价必须在这里收回来：
     // 结单前一定要有码，否则故障统计等于没做。
     if (to === 'COMPLETED' && !current.fault_code_id) {
       throw new DomainError(
-        '完成工单前必须用「确认故障分类」选出这次的故障代码，否则这次故障进不了任何统计',
+        '完成工单前请返回「核对报修信息」确认故障分类，否则这次故障进不了任何统计',
         409, 'FAULT_CODE_REQUIRED');
     }
     if (to === 'COMPLETED' && !current.diagnosis) {
-      throw new DomainError('完成工单前必须填写故障诊断', 409, 'DIAGNOSIS_REQUIRED');
+      throw new DomainError('完成工单前必须填写诊断原因', 409, 'DIAGNOSIS_REQUIRED');
     }
     if (to === 'COMPLETED' && !current.repair_action) {
       throw new DomainError('完成工单前必须填写维修方法', 409, 'REPAIR_ACTION_REQUIRED');
@@ -1924,6 +2007,9 @@ class EquipmentService {
     if (to === 'ARRIVED' && !current.arrived_at) {
       extraSql += ', arrived_at=?';
       params.push(time);
+    }
+    if (to === 'TRIAL_RUN') {
+      extraSql += ', trial_result=NULL, trial_issue_description=NULL';
     }
     if (to === 'COMPLETED') {
       extraSql += ', completed_at=?';
@@ -1947,17 +2033,17 @@ class EquipmentService {
   updateRepairDetail(id, input, context) {
     assertRole(context.role, [ROLES.TECHNICIAN, ROLES.ADMIN]);
     const current = this.getWorkOrder(id).work_order;
-    this.assertArrived(current, context, '填写维修记录');
+    this.assertRepairStarted(current, context, '填写维修记录');
     const downtimeMinutes = optionalNonNegativeNumber(input.downtime_minutes, '停机分钟');
     const downtimeOverrideReason = optionalText(input.downtime_override_reason || input.note, 500);
     if (downtimeMinutes !== null && !downtimeOverrideReason) {
       throw new DomainError('人工填写停机分钟时必须说明修正原因', 400, 'DOWNTIME_OVERRIDE_REASON_REQUIRED');
     }
     this.db.prepare(`
-      UPDATE work_orders SET diagnosis=?, root_cause=?, repair_action=?, trial_result=?,
+      UPDATE work_orders SET diagnosis=?, root_cause=NULL, repair_action=?,
         downtime_minutes=?, downtime_is_override=?, downtime_override_reason=?, updated_at=? WHERE id=?
-    `).run(optionalText(input.diagnosis, 2000), optionalText(input.root_cause, 2000),
-      optionalText(input.repair_action, 3000), optionalText(input.trial_result, 2000),
+    `).run(optionalText(input.diagnosis, 5000),
+      optionalText(input.repair_action, 3000),
       downtimeMinutes, downtimeMinutes === null ? 0 : 1, downtimeOverrideReason,
       nowIso(), current.id);
     this.history(current.id, 'REPAIR_DETAIL_UPDATED', current.status, current.status,
@@ -1967,12 +2053,53 @@ class EquipmentService {
     return updated;
   }
 
+  updateTrialResult(id, input, context) {
+    assertRole(context.role, [ROLES.TECHNICIAN, ROLES.ADMIN]);
+    const current = this.getWorkOrder(id).work_order;
+    if (current.status !== 'TRIAL_RUN') {
+      throw new DomainError('只有在「待试运行」阶段才能填写试运行结果', 409, 'INVALID_TRIAL_STAGE');
+    }
+    this.assertOwnWorkOrder(current, context, '填写试运行结果');
+    const value = requireText(input.trial_result, '试运行结果', 50).toUpperCase();
+    const result = TRIAL_RESULT_BY_VALUE.get(value);
+    if (!result) throw new DomainError('请选择有效的试运行结果', 400, 'INVALID_TRIAL_RESULT');
+    const issueDescription = optionalText(input.trial_issue_description, 1000);
+    if (result.requires_description && !issueDescription) {
+      throw new DomainError('选择“可运行但仍存在问题”时必须填写问题说明', 400, 'TRIAL_ISSUE_REQUIRED');
+    }
+    const description = result.requires_description ? issueDescription : null;
+    this.db.prepare(`
+      UPDATE work_orders SET trial_result=?, trial_issue_description=?, updated_at=? WHERE id=?
+    `).run(value, description, nowIso(), current.id);
+    this.history(current.id, 'TRIAL_RESULT_UPDATED', current.status, current.status,
+      context.actor, description || result.name, { trial_result: value, trial_issue_description: description });
+    const updated = this.getWorkOrder(current.id);
+    this.audit('work_order', current.id, 'UPDATE_TRIAL_RESULT', context, current, updated.work_order);
+    return updated;
+  }
+
+  assertReportInfoStage(current, context, action) {
+    if (CLOSED_WORK_ORDER_STATUSES.includes(current.status)) {
+      throw new DomainError(`已结束工单不能${action}`, 409);
+    }
+    if (current.status === 'ARRIVED') {
+      this.assertOwnWorkOrder(current, context, action);
+      return;
+    }
+    if (context.role === ROLES.ADMIN && ['SUBMITTED', 'ACCEPTED'].includes(current.status)) return;
+    if (['SUBMITTED', 'ACCEPTED'].includes(current.status)) {
+      throw new DomainError(`要先到现场（把工单推进到「已到场」）才能${action}`, 409, 'NOT_ARRIVED');
+    }
+    throw new DomainError('维修开始后如需修改，请先返回「核对报修信息」阶段', 409, 'REPORT_INFO_LOCKED');
+  }
+
   correctWorkOrderEquipment(id, input, context) {
     assertRole(context.role, [ROLES.TECHNICIAN, ROLES.PRODUCTION_SUPERVISOR, ROLES.ADMIN]);
     const current = this.getWorkOrder(id).work_order;
-    this.assertArrived(current, context, '修正故障设备');
+    this.assertReportInfoStage(current, context, '修正故障设备');
     const equipmentId = positiveId(input.equipment_id, '正确设备');
     this.ensure('equipment', equipmentId, '设备不存在');
+    if (equipmentId === current.final_equipment_id) return this.getWorkOrder(current.id);
     const reason = requireText(input.reason, '修正原因', 500);
     this.db.prepare('UPDATE work_orders SET final_equipment_id=?, updated_at=? WHERE id=?')
       .run(equipmentId, nowIso(), current.id);
@@ -1990,7 +2117,7 @@ class EquipmentService {
   classifyWorkOrder(id, input, context) {
     assertRole(context.role, [ROLES.TECHNICIAN, ROLES.PRODUCTION_SUPERVISOR, ROLES.ADMIN]);
     const current = this.getWorkOrder(id).work_order;
-    this.assertArrived(current, context, '确认故障分类');
+    this.assertReportInfoStage(current, context, '确认故障分类');
     if (!input.fault_code_id) throw new DomainError('请选择故障代码', 400, 'FAULT_CODE_REQUIRED');
     const code = this.getFaultCode(input.fault_code_id);
     if (code.status !== 'ACTIVE') throw new DomainError('该故障代码已停用，请重新选择', 400, 'FAULT_CODE_DISABLED');
@@ -2039,7 +2166,7 @@ class EquipmentService {
   addWorkOrderPart(id, input, context) {
     assertRole(context.role, [ROLES.TECHNICIAN, ROLES.ADMIN]);
     const current = this.getWorkOrder(id).work_order;
-    this.assertArrived(current, context, '记录使用零件');
+    this.assertRepairStarted(current, context, '记录使用零件');
     const quantity = Number(input.quantity);
     if (!Number.isFinite(quantity) || quantity <= 0) throw new DomainError('零件数量必须大于0', 400);
     const partCondition = String(input.part_condition || 'NEW').toUpperCase();
@@ -2102,37 +2229,54 @@ class EquipmentService {
       scores[dimension.key] = assertReviewScore(input[`${dimension.key}_score`], dimension.name);
     }
     const comment = optionalText(input.comment, 1000);
-    const existing = asObject(this.db.prepare('SELECT * FROM work_order_reviews WHERE work_order_id=?').get(current.id));
-    const now = nowIso();
-    if (existing) {
-      this.db.prepare(`
-        UPDATE work_order_reviews SET quality_score=?, attitude_score=?, speed_score=?, comment=?, updated_at=?
-        WHERE work_order_id=?
-      `).run(scores.quality, scores.attitude, scores.speed, comment, now, current.id);
-    } else {
-      this.db.prepare(`
-        INSERT INTO work_order_reviews(work_order_id, reviewer, reviewer_user_id, technician, technician_user_id,
-          quality_score, attitude_score, speed_score, comment, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(current.id, context.actor, context.user_id || null,
-        // 技术员姓名做快照：他离职停用之后，历史评价和综合分仍然要算得出来。
-        current.assignee || null, current.assignee_user_id || null,
-        scores.quality, scores.attitude, scores.speed, comment, now, now);
+    const photos = Array.isArray(input.attachments) ? input.attachments : [];
+    const written = [];
+    try {
+      return transaction(this.db, () => {
+        const existing = asObject(this.db.prepare('SELECT * FROM work_order_reviews WHERE work_order_id=?').get(current.id));
+        const now = nowIso();
+        let reviewId;
+        if (existing) {
+          this.db.prepare(`
+            UPDATE work_order_reviews SET quality_score=?, attitude_score=?, speed_score=?, comment=?, updated_at=?
+            WHERE work_order_id=?
+          `).run(scores.quality, scores.attitude, scores.speed, comment, now, current.id);
+          reviewId = existing.id;
+        } else {
+          const result = this.db.prepare(`
+            INSERT INTO work_order_reviews(work_order_id, reviewer, reviewer_user_id, technician, technician_user_id,
+              quality_score, attitude_score, speed_score, comment, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(current.id, context.actor, context.user_id || null,
+            // 技术员姓名做快照：他离职停用之后，历史评价和综合分仍然要算得出来。
+            current.assignee || null, current.assignee_user_id || null,
+            scores.quality, scores.attitude, scores.speed, comment, now, now);
+          reviewId = Number(result.lastInsertRowid);
+        }
+        written.push(...this.storeAttachments('WORK_ORDER_REVIEW', reviewId, photos, context));
+        const review = this.workOrderReview(current.id);
+        // 工单历史对技术员可见，所以这里**绝对不能**写入评分、评论或评价照片——
+        // 否则接口层把 review 剥成 null 也没用，内容会从时间线里漏出去。
+        this.history(current.id, existing ? 'REVIEW_UPDATED' : 'REVIEWED', current.status, current.status,
+          context.actor, '报修人已提交评价', null);
+        this.audit('work_order_review', review.id, existing ? 'UPDATE' : 'CREATE', context, existing, review);
+        return review;
+      });
+    } catch (error) {
+      for (const item of written) { try { fs.unlinkSync(item.absolute); } catch { /* 已经不在就算了 */ } }
+      throw error;
     }
-    const review = this.workOrderReview(current.id);
-    // 工单历史对技术员可见，所以这里**绝对不能**写入评分和评论——
-    // 否则接口层把 review 剥成 null 也没用，内容会从时间线里漏出去。
-    this.history(current.id, existing ? 'REVIEW_UPDATED' : 'REVIEWED', current.status, current.status,
-      context.actor, '报修人已提交评价', null);
-    this.audit('work_order_review', review.id, existing ? 'UPDATE' : 'CREATE', context, existing, review);
-    return review;
   }
 
   workOrderReview(workOrderId) {
     const row = asObject(this.db.prepare(`
       SELECT * FROM work_order_reviews WHERE work_order_id=?
     `).get(Number(workOrderId)));
-    return row ? { ...row, overall_score: reviewOverall(row) } : null;
+    return row ? {
+      ...row,
+      overall_score: reviewOverall(row),
+      attachments: this.listAttachments('WORK_ORDER_REVIEW', row.id),
+    } : null;
   }
 
   // 技术员只能看自己的综合分。只认会话里的 user_id，不接受任何入参指定别人。
@@ -2147,7 +2291,7 @@ class EquipmentService {
 
   listReviews(context) {
     assertRole(context.role, [ROLES.ADMIN]);
-    return asObjects(this.db.prepare(`
+    const rows = asObjects(this.db.prepare(`
       SELECT r.*, w.work_order_no, w.fault_symptom, w.completed_at,
              e.code AS equipment_code, e.standard_name AS equipment_name,
              p.name AS process_name, l.name AS line_name
@@ -2157,7 +2301,13 @@ class EquipmentService {
       LEFT JOIN processes p ON p.id = w.process_id
       LEFT JOIN production_lines l ON l.id = p.line_id
       ORDER BY r.id DESC
-    `).all()).map((row) => ({ ...row, overall_score: reviewOverall(row) }));
+    `).all());
+    const photos = this.attachmentsByTarget('WORK_ORDER_REVIEW', rows.map((row) => row.id));
+    return rows.map((row) => ({
+      ...row,
+      overall_score: reviewOverall(row),
+      attachments: photos.get(row.id) || [],
+    }));
   }
 
   technicianRanking(context) {
@@ -2221,6 +2371,9 @@ class EquipmentService {
     if (processId) this.assertActiveStructure('process', processId);
     const findings = requireText(input.findings, '巡检发现', 2000);
     const photos = Array.isArray(input.attachments) ? input.attachments : [];
+    if (!photos.length) {
+      throw new DomainError('请先现场拍摄至少一张巡检照片', 400, 'PATROL_PHOTO_REQUIRED');
+    }
 
     const written = [];
     try {
@@ -2968,6 +3121,13 @@ class EquipmentService {
     // 普工只能看自己报修的工单的照片，和工单本身的可见性保持一致。
     if (row.target_type === 'WORK_ORDER') this.getWorkOrder(row.target_id, context);
     else if (row.target_type === 'TASK') this.getScheduledTask(row.target_id, context);
+    else if (row.target_type === 'WORK_ORDER_REVIEW') {
+      const review = asObject(this.db.prepare('SELECT reviewer_user_id FROM work_order_reviews WHERE id=?').get(row.target_id));
+      if (!review) throw new DomainError('评价不存在', 404, 'NOT_FOUND');
+      if (context && context.role !== ROLES.ADMIN && review.reviewer_user_id !== context.user_id) {
+        throw new DomainError('当前级别无权查看评价照片', 403, 'FORBIDDEN');
+      }
+    }
     else if (context && Number(context.level) === LEVELS.WORKER) {
       throw new DomainError('当前级别无权查看巡检照片', 403, 'FORBIDDEN');
     }

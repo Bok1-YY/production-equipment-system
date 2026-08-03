@@ -55,12 +55,13 @@ test('设备履历汇总位置变动、维修工单、零件、档案修改和�
     service.transitionWorkOrder(id, { to_status: status }, technician);
   }
   service.updateRepairDetail(id, {
-    diagnosis: '主接触器触点烧结', root_cause: '触点老化', repair_action: '更换接触器',
-    trial_result: '空载试运行正常', downtime_minutes: 95, downtime_override_reason: '按现场停机记录修正',
+    diagnosis: '主接触器触点烧结，原因为触点老化', repair_action: '更换接触器',
+    downtime_minutes: 95, downtime_override_reason: '按现场停机记录修正',
   }, technician);
   service.addWorkOrderPart(id, { part_name: '交流接触器', specification: 'CJX2-2510', quantity: 1, unit: '只' }, technician);
   service.addWorkOrderPart(id, { part_name: '熔断器', quantity: 2, unit: '只' }, technician);
   service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, technician);
+  service.updateTrialResult(id, { trial_result: 'NORMAL' }, technician);
   service.transitionWorkOrder(id, { to_status: 'COMPLETED', note: '验收正常' }, technician);
 
   const history = service.equipmentHistory(equipment.id);
@@ -89,7 +90,7 @@ test('设备履历汇总位置变动、维修工单、零件、档案修改和�
   assert.equal(repaired.fault_symptom, '机械故障 / 轴承 / 异响', '故障现象由故障码回填');
   assert.equal(repaired.fault_location, '机头右侧');
   assert.equal(repaired.repair_action, '更换接触器');
-  assert.equal(repaired.trial_result, '空载试运行正常');
+  assert.equal(repaired.trial_result, 'NORMAL');
   assert.equal(repaired.reporter, '普工李四');
   assert.equal(repaired.assignee, '技术员张三');
   assert.equal(repaired.parts.length, 2);

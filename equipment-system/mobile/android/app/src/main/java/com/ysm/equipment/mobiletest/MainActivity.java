@@ -10,6 +10,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(PatrolCameraPlugin.class);
         registerPlugin(RepairNotificationsPlugin.class);
         registerPlugin(ServerSettingsPlugin.class);
         CapConfig packaged = CapConfig.loadDefault(this);

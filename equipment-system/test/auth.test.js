@@ -199,16 +199,14 @@ test('普工报修→技术员抢单→技术员结单→普工评价的闭环',
   assert.ok(claimed.history.some((item) => item.event_type === 'CLAIMED'));
 
   service.transitionWorkOrder(id, { to_status: 'ARRIVED' }, technician);
+  service.correctWorkOrderEquipment(id, { equipment_id: equipment.id, reason: '到场后确认是主挤出机' }, technician);
   service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, technician);
   service.updateRepairDetail(id, {
-    diagnosis: '主接触器触点烧结', root_cause: '触点老化', repair_action: '更换接触器', trial_result: '空载试运行正常',
+    diagnosis: '主接触器触点烧结，原因为触点老化', repair_action: '更换接触器',
   }, technician);
   service.addWorkOrderPart(id, { part_name: '交流接触器', quantity: 1, unit: '只' }, technician);
   service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, technician);
-
-  // 工单还没挂设备，这时候结单会被拦下——不然这次维修记不到任何设备账上。
-  assert.throws(() => service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, technician), /修正故障设备/);
-  service.correctWorkOrderEquipment(id, { equipment_id: equipment.id, reason: '到场后确认是主挤出机' }, technician);
+  service.updateTrialResult(id, { trial_result: 'NORMAL' }, technician);
 
   // 2026-07-26 起结单权限下放给技术员：验收由报修人的评价承担，管理员不必在场。
   const completed = service.transitionWorkOrder(id, { to_status: 'COMPLETED', note: '已修复' }, technician);

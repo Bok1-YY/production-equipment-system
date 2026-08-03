@@ -94,7 +94,7 @@ cd production-equipment-system\equipment-system
 npm ci
 ```
 
-随后双击仓库根目录或桌面的 `一键启动全功能设备系统.bat`。启动器自动检测当前私网 IPv4、首次申请 TCP 8787 私有网络防火墙规则、启动完整后端并同时显示电脑地址、手机地址和安装页。电脑和手机共用同一套账号、功能与数据，不再区分多个“一键启动”类别。关闭启动窗口或双击 `equipment-system\stop-windows.bat` 即可停止。
+随后双击仓库根目录或桌面的 `一键启动全功能设备系统.bat`。启动器自动检测当前私网 IPv4、启动完整后端、等待健康检查通过，再打开电脑页面并显示手机地址和安装页。服务在后台常驻，关闭启动窗口不会中断；需要停止时双击 `equipment-system\stop-windows.bat`。启动失败时，错误会显示在窗口中，服务日志保存在 `equipment-system\data\server-*.log`。电脑和手机共用同一套账号、功能与数据，不再区分多个“一键启动”类别。
 
 ### Linux / macOS
 

@@ -6,6 +6,7 @@ data/*.db
 data/*.db-*
 data/*.log
 data/*.pid
+data/.firewall-*-ready
 data/attachments/
 
 coverage/

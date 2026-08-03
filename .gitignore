@@ -16,6 +16,7 @@ equipment-system/data/*.db-shm
 equipment-system/data/*.db-journal
 equipment-system/data/*.log
 equipment-system/data/*.pid
+equipment-system/data/.firewall-*-ready
 # 现场照片：真实生产数据，和数据库一样靠文件系统备份，不进版本控制
 equipment-system/data/attachments/
 

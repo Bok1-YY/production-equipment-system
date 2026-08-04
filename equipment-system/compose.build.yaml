@@ -1,0 +1,9 @@
+services:
+  app:
+    image: ${APP_IMAGE_BUILD:-ysm-equipment-system:server}
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+  backup:
+    image: ${APP_IMAGE_BUILD:-ysm-equipment-system:server}

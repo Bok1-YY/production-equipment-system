@@ -143,7 +143,7 @@ YSM_DB_PATH=/安全数据目录/equipment.db \
 npm start
 ```
 
-正式 Docker 部署使用 [compose.production.yaml](compose.production.yaml) 和 [deploy/Caddyfile](deploy/Caddyfile)，参数从 `.env.production` 注入。参考 `.env.production.example`，不得把正式域名密钥、签名口令或数据库提交到 Git。
+正式 Docker 部署使用 [compose.production.yaml](compose.production.yaml) 和 [deploy/Caddyfile](deploy/Caddyfile)，参数从 `.env.production` 注入。服务器直接从 GitHub 源码构建时再叠加 [compose.build.yaml](compose.build.yaml)。生产容器固定设置 `YSM_REQUIRE_EXISTING_DB=1`：宿主机数据目录挂错或缺少 `equipment.db` 时拒绝启动，绝不静默创建空库。`DATA_DIR` 与 `BACKUP_DIR` 可适配服务器现有目录；数据库、附件和正式环境变量都不进入镜像或 Git。具体升级顺序见仓库根目录 [Docker服务器升级说明.md](../Docker服务器升级说明.md)。
 
 `PUBLIC_BASE_URL`决定铭牌二维码中保存的地址。**在这个变量配好之前不要批量打印铭牌**——见下面「设备铭牌」一节。
 
@@ -232,6 +232,8 @@ npm test
 npm run test:browser
 npm run test:load
 ```
+
+备份脚本不会按天数清理旧备份，也不提供自动删除入口。只读核验数据库可运行 `YSM_DB_PATH=/data/equipment.db node scripts/inspect-database.js`。
 
 ## 工单评价
 

@@ -8,6 +8,7 @@ services:
       HOST: 0.0.0.0
       PORT: "8787"
       YSM_DB_PATH: /data/equipment.db
+      YSM_REQUIRE_EXISTING_DB: "1"
       PUBLIC_BASE_URL: https://${DOMAIN:?DOMAIN is required}
       YSM_TRUSTED_ORIGIN: https://${DOMAIN}
       YSM_TRUST_PROXY: "1"
@@ -25,7 +26,7 @@ services:
       - "8787"
     volumes:
       - type: bind
-        source: /srv/ysm/data
+        source: ${DATA_DIR:-/srv/ysm/data}
         target: /data
     networks:
       - backend
@@ -61,13 +62,13 @@ services:
     environment:
       NODE_ENV: production
       YSM_DB_PATH: /data/equipment.db
-      YSM_BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
     volumes:
       - type: bind
-        source: /srv/ysm/data
+        source: ${DATA_DIR:-/srv/ysm/data}
         target: /data
+        read_only: true
       - type: bind
-        source: /srv/ysm/backups
+        source: ${BACKUP_DIR:-/srv/ysm/backups}
         target: /backups
     network_mode: none
     read_only: true

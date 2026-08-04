@@ -10,7 +10,12 @@ const { hashPassword } = require('./auth');
 const DEFAULT_DB_PATH = path.join(__dirname, '..', 'data', 'equipment.db');
 
 function openDatabase(filename = process.env.YSM_DB_PATH || DEFAULT_DB_PATH) {
-  if (filename !== ':memory:') fs.mkdirSync(path.dirname(filename), { recursive: true });
+  if (filename !== ':memory:') {
+    if (process.env.YSM_REQUIRE_EXISTING_DB === '1' && !fs.existsSync(filename)) {
+      throw new Error(`数据库不存在，已拒绝创建空库：${path.resolve(filename)}`);
+    }
+    fs.mkdirSync(path.dirname(filename), { recursive: true });
+  }
   const db = new DatabaseSync(filename);
   db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
   migrate(db);

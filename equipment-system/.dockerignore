@@ -3,6 +3,9 @@
 node_modules
 npm-debug.log*
 data
+factory-data
+demo-data
+**/attachments
 coverage
 .nyc_output
 mobile

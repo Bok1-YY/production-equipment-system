@@ -8,7 +8,6 @@ const { DatabaseSync } = require('node:sqlite');
 
 const dbPath = path.resolve(process.env.YSM_DB_PATH || path.join(__dirname, '..', 'data', 'equipment.db'));
 const backupRoot = path.resolve(process.argv[2] || '/backups');
-const retentionDays = Math.max(7, Number(process.env.YSM_BACKUP_RETENTION_DAYS) || 30);
 
 function sqlString(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
@@ -33,7 +32,7 @@ if (!fs.existsSync(dbPath)) {
   fs.mkdirSync(workDir, { recursive: false });
   try {
     const databaseFile = path.join(workDir, 'equipment.db');
-    const db = new DatabaseSync(dbPath);
+    const db = new DatabaseSync(dbPath, { readOnly: true });
     db.exec('PRAGMA busy_timeout=30000');
     const integrity = db.prepare('PRAGMA integrity_check').all();
     if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok') {
@@ -65,12 +64,6 @@ if (!fs.existsSync(dbPath)) {
     }, null, 2)}\n`, { mode: 0o600 });
     fs.renameSync(workDir, finalDir);
 
-    const cutoff = Date.now() - retentionDays * 86400000;
-    for (const entry of fs.readdirSync(backupRoot, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !/^ysm-backup-\d{8}T\d{6}Z$/.test(entry.name)) continue;
-      const full = path.join(backupRoot, entry.name);
-      if (fs.statSync(full).mtimeMs < cutoff) fs.rmSync(full, { recursive: true });
-    }
     process.stdout.write(`${finalDir}\n`);
   } catch (error) {
     fs.rmSync(workDir, { recursive: true, force: true });

@@ -1,6 +1,7 @@
 param(
     [int]$Port = 8787,
-    [string]$DatabasePath = (Join-Path $env:TEMP 'ysm-android-runtime-test\equipment.db')
+    [string]$DatabasePath = (Join-Path $env:TEMP 'ysm-android-runtime-test\equipment.db'),
+    [switch]$RequireExistingDatabase
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,6 +31,7 @@ $env:HOST = '127.0.0.1'
 $env:PORT = [string]$Port
 $env:PUBLIC_BASE_URL = "http://127.0.0.1:$Port"
 $env:YSM_DB_PATH = $resolvedDatabase
+$env:YSM_REQUIRE_EXISTING_DB = if ($RequireExistingDatabase) { '1' } else { '0' }
 
 Set-Location -LiteralPath $projectRoot
 & $node '.\src\server.js'

@@ -6,6 +6,8 @@
 > 目标环境：中国大陆云服务器、公司已备案域名、50～200 个账号、约 30 人并发  
 > 目标架构：Docker Compose + Node.js 24 + Caddy 自动 HTTPS + SQLite 单实例
 
+> 已运行旧版 Docker、需要从 GitHub 源码构建最新版并迁移开发电脑数据库时，优先按 [Docker服务器升级说明](Docker服务器升级说明.md) 做只读摸底和分步升级；不要直接照抄本文整章命令覆盖现有环境。
+
 ---
 
 ## 0. 使用说明
@@ -111,7 +113,7 @@
 ## 2. 阶段一：程序生产化与 Docker 化
 
 > 执行位置：**[本地电脑]**  
-> 当前项目可以在 Node.js 22.23.1 下通过全部 17 个测试文件，但生产镜像计划使用 Node.js 24 LTS。  
+> 当前项目自动化测试为 151 项（150 通过、1 项缺现场真实台账时跳过），生产镜像使用 Node.js 24。
 > 本阶段完成前，不得把当前测试版直接暴露到公网。
 
 ### 2.1 上线前必须完成的安全改造
@@ -231,6 +233,7 @@ services:
       HOST: 0.0.0.0
       PORT: "8787"
       YSM_DB_PATH: /data/equipment.db
+      YSM_REQUIRE_EXISTING_DB: "1"
       PUBLIC_BASE_URL: https://${DOMAIN}
       YSM_SECURE_COOKIE: "1"
       YSM_TRUSTED_ORIGIN: https://${DOMAIN}
@@ -240,7 +243,7 @@ services:
       - "8787"
     volumes:
       - type: bind
-        source: /srv/ysm/data
+        source: ${DATA_DIR:-/srv/ysm/data}
         target: /data
     networks:
       - backend
@@ -283,13 +286,13 @@ services:
     environment:
       NODE_ENV: production
       YSM_DB_PATH: /data/equipment.db
-      YSM_BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
     volumes:
       - type: bind
-        source: /srv/ysm/data
+        source: ${DATA_DIR:-/srv/ysm/data}
         target: /data
+        read_only: true
       - type: bind
-        source: /srv/ysm/backups
+        source: ${BACKUP_DIR:-/srv/ysm/backups}
         target: /backups
     network_mode: none
     restart: "no"
@@ -1101,6 +1104,8 @@ curl --max-time 5 http://<云服务器公网IP>:8787
 5. 生成清单和校验值；
 6. 写入 `/backups/ysm-backup-<时间戳>/`；
 7. 失败时删除不完整备份并返回非零退出码。
+
+备份默认永久保留，不得自动删除；仓库备份脚本不提供历史备份清理入口。
 
 生产 Compose 中的 `backup` 服务只在手工或定时任务中运行：
 

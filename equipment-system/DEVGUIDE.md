@@ -53,13 +53,14 @@ npm run dev          # node --watch，改完自动重启
 | `PORT` | `8787` | 监听端口 |
 | `HOST` | `127.0.0.1` | **只监听本机**。手机/别的电脑要访问必须改成 `0.0.0.0`，见 §十二 |
 | `YSM_DB_PATH` | `data/equipment.db` | 手动启动默认值；Windows 一键启动固定覆盖为 `factory-data/equipment.db`，自动测试必须使用 `%TEMP%` 独立库 |
+| `YSM_REQUIRE_EXISTING_DB` | 未设 | Docker 生产环境固定为 `1`；挂载库不存在时拒绝启动，防止生成空库 |
 | `PUBLIC_BASE_URL` | 由请求头推导 | **决定铭牌二维码里存的地址**。正式域名定下来之前不要批量打印铭牌 |
 | `YSM_SECURE_COOKIE` | 未设 | 设为 `1` 时会话 Cookie 加 `Secure`，上了 HTTPS 反代必须设 |
 
 ### 0.5 跑测试
 
 ```bash
-npm test                                   # node --test，当前 150 项（149 通过，1 项缺现场真实台账时跳过）
+npm test                                   # node --test，当前 151 项（150 通过，1 项缺现场真实台账时跳过）
 node scripts/http-smoke.js                 # HTTP 冒烟（需服务在跑）
 SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码后
 ```
@@ -131,7 +132,7 @@ equipment-system/
 ├── web/app.js           ★ 全部前端逻辑（无框架、无模块化、按顺序执行）
 ├── web/styles.css       设计令牌（:root 变量）+ 组件样式 + 760px 移动端断点
 │
-│  ── 测试（node --test，150 项）──
+│  ── 测试（node --test，151 项）──
 ├── test/domain.test.js            编码格式与状态机（纯函数）
 ├── test/service.test.js           台账/编码/组合/导入/结构删除/工单/层级字段（12 项）
 ├── test/auth.test.js              密码/会话/三级/成员管理/工单可见性（11 项）

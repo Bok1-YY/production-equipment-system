@@ -285,9 +285,12 @@ function requireManager(context) {
 async function handleApi(request, response, url) {
   const method = request.method;
   const pathname = url.pathname;
-  const notificationRequest = ['/api/notifications/repairs', '/api/notification-device'].includes(pathname);
+  const documentUploadParams = method === 'POST'
+    ? match(pathname, /^\/api\/modification-tasks\/(\d+)\/documents$/) : null;
+  const notificationRequest = ['/api/notifications/repairs', '/api/notifications', '/api/notification-device'].includes(pathname);
   const context = contextFrom(request, { notification: notificationRequest, touch: !notificationRequest });
-  const body = ['POST', 'PUT', 'PATCH'].includes(method) ? await parseBody(request) : {};
+  const body = ['POST', 'PUT', 'PATCH'].includes(method) && !documentUploadParams
+    ? await parseBody(request) : {};
   let params;
 
   if (method === 'GET' && ['/api/health', '/api/health/live'].includes(pathname)) {
@@ -345,10 +348,18 @@ async function handleApi(request, response, url) {
   }
 
   if (method === 'POST' && pathname === '/api/notification-device') {
-    if (Number(context.level) !== LEVELS.TECHNICIAN) {
-      throw new DomainError('只有技术员需要开启待接单通知', 403, 'FORBIDDEN');
+    if (Number(context.level) < LEVELS.TECHNICIAN) {
+      throw new DomainError('只有技术员和管理员可以开启业务通知', 403, 'FORBIDDEN');
     }
     return success(response, createNotificationDevice(db, context.user_id, body.device_label), 201);
+  }
+
+  if (documentUploadParams) {
+    const filename = request.headers['x-file-name'];
+    if (!filename) throw new DomainError('缺少文件名', 400, 'VALIDATION_ERROR');
+    return success(response, await service.storeModificationDocument(
+      documentUploadParams[0], request, { filename, mime: request.headers['content-type'] }, context
+    ), 201);
   }
 
   if (method === 'GET' && pathname === '/api/users') {
@@ -523,10 +534,45 @@ async function handleApi(request, response, url) {
     return success(response, service.listCompositionChanges());
   }
   if (method === 'POST' && pathname === '/api/composition-changes') {
-    return success(response, service.createCompositionChange(body, context), 201);
+    throw new DomainError('设备变动已经升级为技改任务，请从“技改任务”创建',
+      410, 'LEGACY_CHANGE_DISABLED');
   }
   if (method === 'POST' && (params = match(pathname, /^\/api\/composition-changes\/(\d+)\/review$/))) {
-    return success(response, service.reviewCompositionChange(params[0], body, context));
+    throw new DomainError('旧设备变动审核入口已经停用，请使用技改任务',
+      410, 'LEGACY_CHANGE_DISABLED');
+  }
+
+  if (method === 'GET' && pathname === '/api/modification-tasks') {
+    return success(response, service.listModificationTasks(context, { status: url.searchParams.get('status') }));
+  }
+  if (method === 'POST' && pathname === '/api/modification-tasks') {
+    return success(response, service.createModificationTask(body, context), 201);
+  }
+  if (method === 'GET' && (params = match(pathname, /^\/api\/modification-tasks\/(\d+)$/))) {
+    return success(response, service.getModificationTask(params[0], context));
+  }
+  if (method === 'PUT' && (params = match(pathname, /^\/api\/modification-tasks\/(\d+)$/))) {
+    return success(response, service.updateModificationTask(params[0], body, context));
+  }
+  if (method === 'POST' && (params = match(pathname, /^\/api\/modification-tasks\/(\d+)\/(publish|acknowledge|arrive|start|deviation|revise|submit-review|review|cancel)$/))) {
+    const actions = {
+      publish: () => service.publishModificationTask(params[0], body, context),
+      acknowledge: () => service.acknowledgeModificationTask(params[0], body, context),
+      arrive: () => service.arriveModificationTask(params[0], body, context),
+      start: () => service.startModificationTask(params[0], body, context),
+      deviation: () => service.reportModificationDeviation(params[0], body, context),
+      revise: () => service.reviseModificationTask(params[0], body, context),
+      'submit-review': () => service.submitModificationTask(params[0], body, context),
+      review: () => service.reviewModificationTask(params[0], body, context),
+      cancel: () => service.cancelModificationTask(params[0], body, context),
+    };
+    return success(response, actions[params[1]]());
+  }
+  if (method === 'PUT' && (params = match(pathname, /^\/api\/modification-tasks\/(\d+)\/items\/(\d+)\/result$/))) {
+    return success(response, service.updateModificationItemResult(params[0], params[1], body, context));
+  }
+  if (method === 'POST' && (params = match(pathname, /^\/api\/modification-tasks\/(\d+)\/items\/(\d+)\/photos$/))) {
+    return success(response, service.addModificationItemPhotos(params[0], params[1], body, context), 201);
   }
 
   if (method === 'GET' && pathname === '/api/fault-codes') {
@@ -553,7 +599,7 @@ async function handleApi(request, response, url) {
       'Content-Length': file.size,
       'Cache-Control': 'private, max-age=86400',
       'X-Content-Type-Options': 'nosniff',
-      'Content-Disposition': 'inline',
+      'Content-Disposition': `${file.disposition === 'attachment' ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(file.original_name || `attachment-${file.id}`)}`,
     });
     return fs.createReadStream(file.absolute).pipe(response);
   }
@@ -663,6 +709,14 @@ async function handleApi(request, response, url) {
 
   if (method === 'GET' && pathname === '/api/notifications/repairs') {
     return success(response, service.pendingRepairNotifications(context));
+  }
+  if (method === 'GET' && pathname === '/api/notifications') {
+    return success(response, service.listUserNotifications(context, {
+      unread: url.searchParams.get('all') !== '1',
+    }));
+  }
+  if (method === 'POST' && (params = match(pathname, /^\/api\/notifications\/(\d+)\/read$/))) {
+    return success(response, service.readUserNotification(params[0], context));
   }
   if (method === 'GET' && pathname === '/api/work-orders') return success(response, service.listWorkOrders(context));
   if (method === 'POST' && pathname === '/api/work-orders') {

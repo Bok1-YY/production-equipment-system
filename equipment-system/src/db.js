@@ -333,6 +333,133 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS notification_devices_by_user
       ON notification_devices(user_id);
 
+    CREATE TABLE IF NOT EXISTS modification_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_no TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      objective TEXT NOT NULL,
+      acceptance_criteria TEXT NOT NULL,
+      priority TEXT NOT NULL DEFAULT 'NORMAL'
+        CHECK(priority IN ('NORMAL', 'URGENT', 'CRITICAL')),
+      planned_start_at TEXT NOT NULL,
+      due_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'DRAFT'
+        CHECK(status IN (
+          'DRAFT', 'PUBLISHED', 'ACCEPTED', 'ARRIVED', 'IN_PROGRESS',
+          'REVISION_REQUESTED', 'REVISING', 'PENDING_REVIEW', 'RETURNED',
+          'APPROVED', 'CANCELLED'
+        )),
+      revision_no INTEGER NOT NULL DEFAULT 0,
+      primary_assignee_user_id INTEGER NOT NULL REFERENCES users(id),
+      created_by_user_id INTEGER NOT NULL REFERENCES users(id),
+      published_by_user_id INTEGER REFERENCES users(id),
+      reviewed_by_user_id INTEGER REFERENCES users(id),
+      published_at TEXT,
+      accepted_at TEXT,
+      arrived_at TEXT,
+      started_at TEXT,
+      submitted_at TEXT,
+      reviewed_at TEXT,
+      cancelled_at TEXT,
+      completion_summary TEXT,
+      outstanding_issues TEXT,
+      review_note TEXT,
+      cancellation_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS modification_tasks_by_status
+      ON modification_tasks(status, due_at, id);
+    CREATE INDEX IF NOT EXISTS modification_tasks_by_primary
+      ON modification_tasks(primary_assignee_user_id, status, id);
+
+    CREATE TABLE IF NOT EXISTS modification_task_members (
+      task_id INTEGER NOT NULL REFERENCES modification_tasks(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      member_role TEXT NOT NULL CHECK(member_role IN ('PRIMARY', 'COLLABORATOR')),
+      acknowledged_revision INTEGER NOT NULL DEFAULT 0,
+      acknowledged_at TEXT,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(task_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS modification_members_by_user
+      ON modification_task_members(user_id, task_id);
+
+    CREATE TABLE IF NOT EXISTS modification_task_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL REFERENCES modification_tasks(id) ON DELETE CASCADE,
+      sequence_no INTEGER NOT NULL,
+      target_type TEXT NOT NULL CHECK(target_type IN (
+        'EQUIPMENT', 'WORKSHOP', 'LINE', 'PROCESS', 'POSITION'
+      )),
+      action TEXT NOT NULL CHECK(action IN (
+        'INSTALL', 'MOVE', 'REMOVE', 'REPLACE', 'RETROFIT',
+        'CREATE', 'UPDATE', 'REPARENT', 'STATUS', 'DELETE'
+      )),
+      target_id INTEGER,
+      client_ref TEXT,
+      title TEXT NOT NULL,
+      instructions TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      before_json TEXT,
+      affects_operation INTEGER NOT NULL DEFAULT 0,
+      photo_required INTEGER NOT NULL DEFAULT 1,
+      photo_exemption_reason TEXT,
+      execution_result TEXT,
+      result_revision INTEGER,
+      applied_target_id INTEGER,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(task_id, sequence_no),
+      UNIQUE(task_id, client_ref)
+    );
+    CREATE INDEX IF NOT EXISTS modification_items_by_target
+      ON modification_task_items(target_type, target_id, task_id);
+
+    CREATE TABLE IF NOT EXISTS modification_task_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL REFERENCES modification_tasks(id) ON DELETE CASCADE,
+      revision_no INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL,
+      published_by_user_id INTEGER NOT NULL REFERENCES users(id),
+      published_at TEXT NOT NULL,
+      UNIQUE(task_id, revision_no)
+    );
+
+    CREATE TABLE IF NOT EXISTS modification_task_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL REFERENCES modification_tasks(id) ON DELETE CASCADE,
+      event_type TEXT NOT NULL,
+      from_status TEXT,
+      to_status TEXT,
+      actor_user_id INTEGER REFERENCES users(id),
+      actor TEXT NOT NULL,
+      note TEXT,
+      details_json TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS modification_history_by_task
+      ON modification_task_history(task_id, id);
+
+    CREATE TABLE IF NOT EXISTS user_notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      notification_type TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id INTEGER NOT NULL,
+      event_key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      deep_link TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      read_at TEXT,
+      UNIQUE(user_id, event_key)
+    );
+    CREATE INDEX IF NOT EXISTS user_notifications_unread
+      ON user_notifications(user_id, read_at, id);
+
     CREATE TABLE IF NOT EXISTS idempotency_requests (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL REFERENCES users(id),
@@ -490,6 +617,7 @@ function migrate(db) {
     INSERT OR IGNORE INTO app_meta(key, value) VALUES ('change_sequence', '0');
     INSERT OR IGNORE INTO app_meta(key, value) VALUES ('work_order_sequence', '0');
     INSERT OR IGNORE INTO app_meta(key, value) VALUES ('patrol_sequence', '0');
+    INSERT OR IGNORE INTO app_meta(key, value) VALUES ('modification_task_sequence', '0');
   `);
   ensureColumn(db, 'equipment', 'equipment_type_id', 'INTEGER REFERENCES equipment_types(id)');
   ensureColumn(db, 'equipment', 'key_spec', "TEXT NOT NULL DEFAULT ''");
@@ -514,6 +642,11 @@ function migrate(db) {
   ensureColumn(db, 'audit_logs', 'actor_username', 'TEXT');
   ensureColumn(db, 'composition_changes', 'submitted_by_user_id', 'INTEGER REFERENCES users(id)');
   ensureColumn(db, 'composition_changes', 'reviewed_by_user_id', 'INTEGER REFERENCES users(id)');
+  ensureColumn(db, 'composition_changes', 'modification_task_id', 'INTEGER REFERENCES modification_tasks(id)');
+  ensureColumn(db, 'composition_changes', 'modification_item_id', 'INTEGER REFERENCES modification_task_items(id)');
+  ensureColumn(db, 'attachments', 'revision_no', 'INTEGER');
+  ensureColumn(db, 'attachments', 'sha256', 'TEXT');
+  ensureColumn(db, 'attachments', 'disposition', "TEXT NOT NULL DEFAULT 'inline'");
   backfillWorkOrderTimestamps(db);
   normalizeMergedWorkOrderStatus(db);
   mergeDiagnosisAndRootCause(db);
@@ -545,6 +678,10 @@ function migrate(db) {
   db.prepare(`
     INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
     VALUES (2, 'structured-inspection-maintenance-and-scan-audit', ?)
+  `).run(now);
+  db.prepare(`
+    INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
+    VALUES (4, 'equipment-modification-task-workflow', ?)
   `).run(now);
 }
 

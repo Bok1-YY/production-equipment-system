@@ -451,6 +451,15 @@ body.mobile-action-open { overflow: hidden; }
   .label-sheet { display: flex; flex-wrap: wrap; gap: 6mm; margin: 0; }
   .label-preview { break-inside: avoid; page-break-inside: avoid; box-shadow: none; }
 }
+.modification-layout { align-items: start; }
+.modification-item-editor { display: grid; gap: 12px; margin: 10px 0 16px; }
+.modification-item { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: #fbfcfb; }
+.modification-item .card-head { padding: 0 0 10px; }
+.modification-result { border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin: 10px 0; }
+.modification-result > label { display: grid; gap: 6px; margin: 10px 0; }
+.danger-text { color: var(--red); }
+select[multiple] { min-height: 84px; }
+
 @media (max-width: 760px) {
   html, body { width: 100%; max-width: 100%; overflow-x: clip; }
   body { min-width: 0; }

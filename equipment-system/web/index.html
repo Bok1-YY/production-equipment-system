@@ -56,7 +56,7 @@
       <button class="nav-item" data-view="maintenance" data-min-level="2">设备保养</button>
       <button class="nav-item" data-view="equipment" data-min-level="2">设备台账</button>
       <button class="nav-item" data-view="structure" data-min-level="2">产线组合</button>
-      <button class="nav-item" data-view="changes" data-min-level="3">设备变动</button>
+      <button class="nav-item" data-view="changes" data-min-level="2">技改任务</button>
       <button class="nav-item" data-view="reviews" data-min-level="3">服务评价</button>
       <button class="nav-item" data-view="fault-codes" data-min-level="3">故障代码</button>
       <button class="nav-item" data-view="members" data-min-level="3">成员管理</button>
@@ -70,6 +70,7 @@
       <section class="view active" id="view-dashboard">
         <div class="page-title"><div><p class="eyebrow">运行概况</p><h1>设备管理总览</h1></div><button class="secondary" data-refresh="dashboard">刷新</button></div>
         <div class="metrics" id="metrics"></div>
+        <div class="card" id="business-notification-card" hidden></div>
         <div class="card my-review" id="my-review-card" hidden></div>
         <div class="card getting-started">
           <div>
@@ -114,20 +115,26 @@
       </section>
 
       <section class="view" id="view-changes">
-        <div class="page-title"><div><p class="eyebrow">管理员提交 · 另一名管理员复核</p><h1>设备变动</h1></div></div>
-        <div class="split narrow-left">
-          <form class="card form-card" id="change-form">
-            <h2>提交变动申请</h2>
-            <label>变动类型<select name="action" id="change-action"><option value="INSTALL">安装</option><option value="MOVE">移动</option><option value="REMOVE">拆除</option><option value="REPLACE">替换</option></select></label>
-            <label>当前/被替换设备<div class="equip-picker" data-picker="change"><input type="search" data-picker-search placeholder="搜设备编号、现场名称或类型" autocomplete="off"><div class="form-row"><select data-picker-workshop aria-label="车间"></select><select data-picker-line aria-label="产线"></select></div><select name="equipment_id" id="change-equipment" data-picker-equipment></select></div></label>
-            <label id="replacement-wrap" hidden>替换后的设备<div class="equip-picker" data-picker="replacement"><input type="search" data-picker-search placeholder="搜设备编号、现场名称或类型" autocomplete="off"><div class="form-row"><select data-picker-workshop aria-label="车间"></select><select data-picker-line aria-label="产线"></select></div><select name="replacement_equipment_id" id="replacement-equipment" data-picker-equipment></select></div></label>
-            <label id="to-position-wrap">目标机位<select name="to_position_id" id="change-position"></select></label>
-            <label>实际生效时间<input type="datetime-local" name="effective_at" id="change-effective"></label>
-            <label>变动原因*<textarea name="reason" required rows="3"></textarea></label>
-            <button>提交另一名管理员复核</button>
+        <div class="page-title"><div><p class="eyebrow">发布任务 · 技工现场施工 · 管理员审核后整单生效</p><h1>设备改造／产线变动</h1></div><button class="secondary" data-refresh="changes">刷新</button></div>
+        <div class="split narrow-left modification-layout">
+          <form class="card form-card" id="modification-form" data-min-level="3">
+            <div class="card-head"><div><h2 id="modification-form-title">新建技改任务</h2><p class="hint">先保存草稿并上传技术资料，确认无误后再发布。</p></div><button type="button" class="button-link small" id="cancel-modification-edit" hidden>取消编辑</button></div>
+            <label>任务标题*<input name="title" required maxlength="120" placeholder="例如：一号线挤出机搬迁及电控改造"></label>
+            <label>改造目的*<textarea name="objective" required rows="3"></textarea></label>
+            <label>验收标准*<textarea name="acceptance_criteria" required rows="3"></textarea></label>
+            <div class="form-row"><label>优先级<select name="priority"><option value="NORMAL">一般</option><option value="URGENT">紧急</option><option value="CRITICAL">特急</option></select></label><label>主负责人*<select name="primary_assignee_user_id" id="modification-primary" required></select></label></div>
+            <div class="form-row"><label>计划开始*<input type="datetime-local" name="planned_start_at" required></label><label>完成截止*<input type="datetime-local" name="due_at" required></label></div>
+            <label>协作技工（可多选）<select id="modification-collaborators" multiple size="3"></select></label>
+            <div class="card-head compact"><div><h3>变更项目</h3><p class="hint">一张任务可安排多台设备和多项产线调整。</p></div><button type="button" class="secondary small" id="add-modification-item">新增一项</button></div>
+            <div id="modification-item-editor" class="modification-item-editor"></div>
+            <label class="file-button button-link">选择技术文件和图纸<input type="file" id="modification-documents" multiple accept=".jpg,.jpeg,.png,.webp,.pdf,.doc,.docx,.xls,.xlsx,.dwg,.dxf,.zip"></label>
+            <div id="modification-document-selection" class="hint">尚未选择新文件</div>
+            <button type="submit">保存草稿</button>
           </form>
-          <div class="card table-card"><div class="card-head"><h2>变动申请</h2><span class="hint">审核时再次校验现场状态</span></div><div id="change-list" class="stack-list"></div></div>
+          <div class="card table-card"><div class="card-head"><div><h2>技改任务</h2><p class="hint">审核通过前不会修改设备和产线数据。</p></div><span id="modification-count" class="pill"></span></div><div id="change-list" class="stack-list"></div></div>
         </div>
+        <details class="card fold" data-min-level="3" style="margin-top:16px"><summary>查看旧版设备变动历史</summary><div id="legacy-change-list" class="stack-list"></div></details>
+        <div class="drawer" id="modification-drawer" hidden><div class="drawer-backdrop" data-close-modification></div><div class="drawer-panel"><button class="drawer-close" data-close-modification>×</button><div id="modification-detail"></div></div></div>
       </section>
 
       <section class="view" id="view-repairs">

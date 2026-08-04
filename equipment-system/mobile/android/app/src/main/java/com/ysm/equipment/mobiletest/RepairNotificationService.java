@@ -5,7 +5,6 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
-import android.service.notification.StatusBarNotification;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -14,6 +13,7 @@ import android.os.Build;
 import android.os.IBinder;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
+import android.service.notification.StatusBarNotification;
 import android.util.Base64;
 import androidx.core.app.NotificationCompat;
 import java.io.BufferedReader;
@@ -35,6 +35,10 @@ import javax.crypto.spec.GCMParameterSpec;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+/**
+ * A foreground polling service for both repair and modification-task notifications.
+ * The historical class/plugin names are retained so installed clients can upgrade in place.
+ */
 public class RepairNotificationService extends Service {
     static final String ACTION_START = "com.ysm.equipment.mobiletest.START_REPAIR_NOTIFICATIONS";
     static final String ACTION_STOP = "com.ysm.equipment.mobiletest.STOP_REPAIR_NOTIFICATIONS";
@@ -42,6 +46,8 @@ public class RepairNotificationService extends Service {
     static final String EXTRA_NOTIFICATION_TOKEN = "notification_token";
     static final String EXTRA_USER_ID = "user_id";
     static final String EXTRA_WORK_ORDER_ID = "work_order_id";
+    static final String EXTRA_MODIFICATION_TASK_ID = "modification_task_id";
+    static final String EXTRA_NOTIFICATION_ID = "notification_id";
 
     private static final String PREFS = "repair_notifications";
     private static final String PREF_TOKEN_CIPHER = "notification_token_cipher";
@@ -49,12 +55,18 @@ public class RepairNotificationService extends Service {
     private static final String KEY_ALIAS = "ysm_repair_notification_token";
     private static final String CHANNEL_MONITOR = "repair_monitor";
     private static final String CHANNEL_REPAIRS = "new_repairs";
+    private static final String CHANNEL_TASKS = "modification_tasks";
     private static final String GROUP_REPAIRS = "ysm_pending_repairs";
+    private static final String GROUP_TASKS = "ysm_modification_tasks";
     private static final int MONITOR_ID = 9100;
-    private static final int SUMMARY_ID = 9101;
+    private static final int REPAIR_SUMMARY_ID = 9101;
+    private static final int TASK_SUMMARY_ID = 9102;
+    private static final int REPAIR_NOTIFICATION_BASE = 100000;
+    private static final int TASK_NOTIFICATION_BASE = 1100000000;
     private static final long POLL_SECONDS = 30;
 
     private final Set<Integer> visibleRepairIds = new HashSet<>();
+    private final Set<Integer> visibleTaskNotificationIds = new HashSet<>();
     private ScheduledExecutorService executor;
     private NotificationManager notifications;
     private SharedPreferences preferences;
@@ -97,8 +109,8 @@ public class RepairNotificationService extends Service {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
 
         NotificationChannel monitor = new NotificationChannel(
-            CHANNEL_MONITOR, "报修通知运行状态", NotificationManager.IMPORTANCE_LOW);
-        monitor.setDescription("保持厂区 Wi-Fi 下的报修消息监听");
+            CHANNEL_MONITOR, "设备管理通知运行状态", NotificationManager.IMPORTANCE_LOW);
+        monitor.setDescription("保持设备报修和技改任务消息监听");
         monitor.setShowBadge(false);
         notifications.createNotificationChannel(monitor);
 
@@ -110,6 +122,15 @@ public class RepairNotificationService extends Service {
         repairs.setLightColor(Color.RED);
         repairs.enableLights(true);
         notifications.createNotificationChannel(repairs);
+
+        NotificationChannel tasks = new NotificationChannel(
+            CHANNEL_TASKS, "设备改造与产线变动", NotificationManager.IMPORTANCE_HIGH);
+        tasks.setDescription("通知管理员和技术员处理技改任务");
+        tasks.enableVibration(true);
+        tasks.setShowBadge(true);
+        tasks.setLightColor(Color.GREEN);
+        tasks.enableLights(true);
+        notifications.createNotificationChannel(tasks);
     }
 
     private Notification monitorNotification() {
@@ -118,8 +139,8 @@ public class RepairNotificationService extends Service {
             this, 0, openApp, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         return new NotificationCompat.Builder(this, CHANNEL_MONITOR)
             .setSmallIcon(R.drawable.ic_stat_repair)
-            .setContentTitle("报修通知已开启")
-            .setContentText("正在通过厂区 Wi-Fi 监听新的设备报修")
+            .setContentTitle("设备管理业务通知已开启")
+            .setContentText("正在监听设备报修和技改任务消息")
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -137,7 +158,7 @@ public class RepairNotificationService extends Service {
     private void pollSafely() {
         if (System.currentTimeMillis() < nextAttemptAt) return;
         try {
-            PollResult result = fetchRepairs();
+            PollResult result = fetchNotifications();
             if (result.unauthorized) {
                 stopMonitoring();
                 return;
@@ -145,8 +166,8 @@ public class RepairNotificationService extends Service {
             consecutiveFailures = 0;
             nextAttemptAt = 0;
             showRepairs(result.repairs);
+            showTaskNotifications(result.tasks);
         } catch (Exception ignored) {
-            // Wi-Fi 临时切换或服务维护时指数退避，避免手机在断网期间持续唤醒和耗电。
             consecutiveFailures += 1;
             nextAttemptAt = System.currentTimeMillis()
                 + TimeUnit.SECONDS.toMillis(retryDelaySeconds(consecutiveFailures));
@@ -158,11 +179,29 @@ public class RepairNotificationService extends Service {
         return Math.min(300, 30L << Math.min(failures - 1, 4));
     }
 
-    private PollResult fetchRepairs() throws Exception {
+    private PollResult fetchNotifications() throws Exception {
         String serverUrl = preferences.getString(EXTRA_SERVER_URL, "");
         String token = loadNotificationToken();
         if (serverUrl.isBlank() || token.isBlank()) throw new IllegalStateException("missing notification token");
-        URL url = new URL(serverUrl.replaceAll("/+$", "") + "/api/notifications/repairs");
+
+        HttpResult tasks = getJson(serverUrl, token, "/api/notifications");
+        if (tasks.status == 401) return new PollResult(true, new JSONArray(), new JSONArray());
+        if (tasks.status != 200) throw new IllegalStateException("task notifications HTTP " + tasks.status);
+
+        HttpResult repairs = getJson(serverUrl, token, "/api/notifications/repairs");
+        if (repairs.status == 401) return new PollResult(true, new JSONArray(), new JSONArray());
+        // Administrators are allowed to receive task notifications but do not have a repair inbox.
+        JSONArray repairRows = repairs.status == 403 ? new JSONArray() : requireSuccess(repairs, "repairs");
+        return new PollResult(false, repairRows, requireSuccess(tasks, "tasks"));
+    }
+
+    private JSONArray requireSuccess(HttpResult result, String endpoint) throws Exception {
+        if (result.status != 200) throw new IllegalStateException(endpoint + " HTTP " + result.status);
+        return new JSONObject(result.body).getJSONArray("data");
+    }
+
+    private HttpResult getJson(String serverUrl, String token, String path) throws Exception {
+        URL url = new URL(serverUrl.replaceAll("/+$", "") + path);
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         connection.setRequestMethod("GET");
         connection.setConnectTimeout(5000);
@@ -170,18 +209,9 @@ public class RepairNotificationService extends Service {
         connection.setRequestProperty("Accept", "application/json");
         connection.setRequestProperty("Authorization", "Bearer " + token);
         int status = connection.getResponseCode();
-        if (status == 401 || status == 403) {
-            connection.disconnect();
-            return new PollResult(true, new JSONArray());
-        }
-        if (status != 200) {
-            connection.disconnect();
-            throw new IllegalStateException("HTTP " + status);
-        }
-        String body = readAll(connection.getInputStream());
+        String body = status == 200 ? readAll(connection.getInputStream()) : "";
         connection.disconnect();
-        JSONObject payload = new JSONObject(body);
-        return new PollResult(false, payload.getJSONArray("data"));
+        return new HttpResult(status, body);
     }
 
     private String readAll(InputStream stream) throws Exception {
@@ -203,25 +233,44 @@ public class RepairNotificationService extends Service {
             int id = repair.optInt("id");
             if (id <= 0) continue;
             current.add(id);
-            notifications.notify(notificationId(id), repairNotification(repair, count));
+            notifications.notify(repairNotificationId(id), repairNotification(repair, count));
         }
-
         for (int oldId : visibleRepairIds) {
-            if (!current.contains(oldId)) notifications.cancel(notificationId(oldId));
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            for (StatusBarNotification active : notifications.getActiveNotifications()) {
-                int notificationId = active.getId();
-                if (notificationId >= 100000 && !current.contains(notificationId - 100000)) {
-                    notifications.cancel(notificationId);
-                }
-            }
+            if (!current.contains(oldId)) notifications.cancel(repairNotificationId(oldId));
         }
         visibleRepairIds.clear();
         visibleRepairIds.addAll(current);
+        if (count > 0) notifications.notify(REPAIR_SUMMARY_ID, repairSummaryNotification(count));
+        else notifications.cancel(REPAIR_SUMMARY_ID);
+    }
 
-        if (count > 0) notifications.notify(SUMMARY_ID, summaryNotification(count));
-        else notifications.cancel(SUMMARY_ID);
+    private synchronized void showTaskNotifications(JSONArray taskNotifications) {
+        Set<Integer> current = new HashSet<>();
+        int count = taskNotifications.length();
+        for (int index = 0; index < count; index++) {
+            JSONObject item = taskNotifications.optJSONObject(index);
+            if (item == null) continue;
+            int notificationId = item.optInt("id");
+            int taskId = item.optInt("entity_id");
+            if (notificationId <= 0 || taskId <= 0) continue;
+            current.add(notificationId);
+            notifications.notify(taskNotificationId(notificationId), taskNotification(item, count));
+        }
+        for (int oldId : visibleTaskNotificationIds) {
+            if (!current.contains(oldId)) notifications.cancel(taskNotificationId(oldId));
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            for (StatusBarNotification active : notifications.getActiveNotifications()) {
+                int id = active.getId();
+                if (id >= TASK_NOTIFICATION_BASE && !current.contains(id - TASK_NOTIFICATION_BASE)) {
+                    notifications.cancel(id);
+                }
+            }
+        }
+        visibleTaskNotificationIds.clear();
+        visibleTaskNotificationIds.addAll(current);
+        if (count > 0) notifications.notify(TASK_SUMMARY_ID, taskSummaryNotification(count));
+        else notifications.cancel(TASK_SUMMARY_ID);
     }
 
     private Notification repairNotification(JSONObject repair, int count) {
@@ -240,7 +289,7 @@ public class RepairNotificationService extends Service {
         open.putExtra(EXTRA_WORK_ORDER_ID, id);
         open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         PendingIntent pendingIntent = PendingIntent.getActivity(
-            this, notificationId(id), open,
+            this, repairNotificationId(id), open,
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         return new NotificationCompat.Builder(this, CHANNEL_REPAIRS)
@@ -254,15 +303,43 @@ public class RepairNotificationService extends Service {
             .setPriority(downtime ? NotificationCompat.PRIORITY_MAX : NotificationCompat.PRIORITY_HIGH)
             .setNumber(count)
             .setOnlyAlertOnce(true)
-            .setOngoing(false)
+            .setAutoCancel(true)
             .build();
     }
 
-    private Notification summaryNotification(int count) {
+    private Notification taskNotification(JSONObject item, int count) {
+        int taskId = item.optInt("entity_id");
+        int sourceNotificationId = item.optInt("id");
+        Intent open = new Intent(this, MainActivity.class);
+        open.putExtra(EXTRA_MODIFICATION_TASK_ID, taskId);
+        open.putExtra(EXTRA_NOTIFICATION_ID, sourceNotificationId);
+        open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+            this, taskNotificationId(sourceNotificationId), open,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        String title = value(item, "title", "技改任务有新进展");
+        String body = value(item, "body", "点击查看任务详情");
+        return new NotificationCompat.Builder(this, CHANNEL_TASKS)
+            .setSmallIcon(R.drawable.ic_stat_repair)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(pendingIntent)
+            .setGroup(GROUP_TASKS)
+            .setCategory(NotificationCompat.CATEGORY_EVENT)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setNumber(count)
+            .setOnlyAlertOnce(true)
+            .setAutoCancel(true)
+            .build();
+    }
+
+    private Notification repairSummaryNotification(int count) {
         Intent open = new Intent(this, MainActivity.class);
         open.putExtra(EXTRA_WORK_ORDER_ID, -1);
         PendingIntent pendingIntent = PendingIntent.getActivity(
-            this, SUMMARY_ID, open,
+            this, REPAIR_SUMMARY_ID, open,
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         return new NotificationCompat.Builder(this, CHANNEL_REPAIRS)
             .setSmallIcon(R.drawable.ic_stat_repair)
@@ -276,13 +353,34 @@ public class RepairNotificationService extends Service {
             .build();
     }
 
+    private Notification taskSummaryNotification(int count) {
+        Intent open = new Intent(this, MainActivity.class);
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+            this, TASK_SUMMARY_ID, open,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        return new NotificationCompat.Builder(this, CHANNEL_TASKS)
+            .setSmallIcon(R.drawable.ic_stat_repair)
+            .setContentTitle("有 " + count + " 条技改任务消息")
+            .setContentText("点击进入设备管理系统")
+            .setContentIntent(pendingIntent)
+            .setGroup(GROUP_TASKS)
+            .setGroupSummary(true)
+            .setNumber(count)
+            .setOnlyAlertOnce(true)
+            .build();
+    }
+
     private String value(JSONObject source, String key, String fallback) {
         String value = source.optString(key, "").trim();
         return value.isEmpty() || "null".equals(value) ? fallback : value;
     }
 
-    private int notificationId(int workOrderId) {
-        return 100000 + Math.floorMod(workOrderId, 1000000000);
+    private int repairNotificationId(int workOrderId) {
+        return REPAIR_NOTIFICATION_BASE + Math.floorMod(workOrderId, 1000000000);
+    }
+
+    private int taskNotificationId(int sourceNotificationId) {
+        return TASK_NOTIFICATION_BASE + Math.floorMod(sourceNotificationId, 999999999);
     }
 
     private synchronized void stopMonitoring() {
@@ -293,9 +391,12 @@ public class RepairNotificationService extends Service {
         }
         if (executor != null) executor.shutdownNow();
         executor = null;
-        for (int id : visibleRepairIds) notifications.cancel(notificationId(id));
+        for (int id : visibleRepairIds) notifications.cancel(repairNotificationId(id));
+        for (int id : visibleTaskNotificationIds) notifications.cancel(taskNotificationId(id));
         visibleRepairIds.clear();
-        notifications.cancel(SUMMARY_ID);
+        visibleTaskNotificationIds.clear();
+        notifications.cancel(REPAIR_SUMMARY_ID);
+        notifications.cancel(TASK_SUMMARY_ID);
         notifications.cancel(MONITOR_ID);
         preferences.edit().clear().apply();
         stopForeground(true);
@@ -355,7 +456,7 @@ public class RepairNotificationService extends Service {
             connection.setRequestProperty("Authorization", "Bearer " + token);
             connection.getResponseCode();
         } catch (Exception ignored) {
-            // 令牌还有绝对有效期；断网时由服务端自动过期，不能因此阻塞登出。
+            // Token expiry on the server is the fallback if the device is offline during logout.
         } finally {
             if (connection != null) connection.disconnect();
         }
@@ -373,13 +474,25 @@ public class RepairNotificationService extends Service {
         return null;
     }
 
+    private static final class HttpResult {
+        final int status;
+        final String body;
+
+        HttpResult(int status, String body) {
+            this.status = status;
+            this.body = body;
+        }
+    }
+
     private static final class PollResult {
         final boolean unauthorized;
         final JSONArray repairs;
+        final JSONArray tasks;
 
-        PollResult(boolean unauthorized, JSONArray repairs) {
+        PollResult(boolean unauthorized, JSONArray repairs, JSONArray tasks) {
             this.unauthorized = unauthorized;
             this.repairs = repairs;
+            this.tasks = tasks;
         }
     }
 }

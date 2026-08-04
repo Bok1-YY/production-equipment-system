@@ -14,6 +14,11 @@ const state = {
   equipment: [],
   equipmentTypes: [],
   workOrders: [],
+  modificationTasks: [],
+  notifications: [],
+  selectedModification: null,
+  modificationDraftItems: [],
+  editingModificationId: null,
   selectedWorkOrder: null,
   patrolPhotoEquipmentId: null,
   activeReviewPhotos: [],
@@ -38,6 +43,7 @@ const EQUIPMENT_STATUS = {
   RETIRED: { name: '报废', tone: 'muted' },
   REPORTED: { name: '已报修', tone: 'pending' },
   REPAIRING: { name: '维修中', tone: 'danger' },
+  MODIFYING: { name: '改造中', tone: 'pending' },
 };
 const MANUAL_EQUIPMENT_STATUSES = ['ACTIVE', 'IDLE', 'DISABLED', 'RETIRED'];
 
@@ -80,6 +86,10 @@ const labels = {
   PENDING_REVIEW: '待审核', COMPLETED: '已完成', CANCELLED: '已取消',
   INSTALL: '安装', MOVE: '移动', REMOVE: '拆除', REPLACE: '替换',
   PENDING: '待确认', APPROVED: '已确认', REJECTED: '已驳回',
+  DRAFT: '草稿', PUBLISHED: '待接收', REVISION_REQUESTED: '待修订', REVISING: '方案修订中',
+  RETURNED: '退回整改', RETROFIT: '设备改造', CREATE: '新增', UPDATE: '资料调整',
+  REPARENT: '调整所属', STATUS: '启停调整', DELETE: '删除',
+  EQUIPMENT: '设备', WORKSHOP: '车间', LINE: '产线', PROCESS: '工序', POSITION: '机位',
   NORMAL: '一般', URGENT: '紧急', CRITICAL: '特急',
   STATUS_SYNC: '维修状态联动', CREATE: '建档', UPDATE: '修改档案', IMPORT_CREATE: '导入建档',
   CREATED: '提交报修', CLAIMED: '技术员接单', REASSIGNED: '转派',
@@ -867,12 +877,22 @@ async function stopNativeRepairNotifications() {
 }
 
 async function openPendingRepairNotification() {
-  if (openingNotification || level() !== LEVELS.TECHNICIAN) return;
+  if (openingNotification || level() < LEVELS.TECHNICIAN) return;
   const plugin = getNativeRepairNotifications();
   if (!plugin) return;
   openingNotification = true;
   try {
     const pending = await plugin.getPendingWorkOrder();
+    const modificationTaskId = Number(pending?.modificationTaskId || 0);
+    const notificationId = Number(pending?.notificationId || 0);
+    if (modificationTaskId) {
+      activateView('changes');
+      await loadChanges();
+      await openModification(modificationTaskId);
+      if (notificationId) await api(`/api/notifications/${notificationId}/read`, { method: 'POST', body: '{}' });
+      await loadNotifications();
+      return;
+    }
     const workOrderId = Number(pending?.workOrderId || 0);
     if (!workOrderId) return;
     activateView('repairs');
@@ -880,7 +900,7 @@ async function openPendingRepairNotification() {
     if (workOrderId === -1) return;
     await openWorkOrder(workOrderId);
   } catch (error) {
-    flash(error.message || '无法打开通知对应的工单', 'error');
+    flash(error.message || '无法打开通知对应的业务单据', 'error');
   } finally {
     openingNotification = false;
   }
@@ -889,26 +909,26 @@ async function openPendingRepairNotification() {
 async function configureNativeRepairNotifications() {
   const plugin = getNativeRepairNotifications();
   if (!plugin) return;
-  if (level() !== LEVELS.TECHNICIAN) {
+  if (level() < LEVELS.TECHNICIAN) {
     await stopNativeRepairNotifications();
     return;
   }
   try {
     const device = await api('/api/notification-device', {
       method: 'POST',
-      body: { device_label: `android-${Number(state.me.user_id)}` },
+      body: JSON.stringify({ device_label: `android-${Number(state.me.user_id)}` }),
     });
     const result = await plugin.startMonitoring({
       userId: Number(state.me.user_id),
       notificationToken: device.token,
     });
     if (result?.enabled === false) {
-      flash('报修通知未开启：请在安卓系统设置中允许通知权限', 'error');
+      flash('业务通知未开启：请在安卓系统设置中允许通知权限', 'error');
       return;
     }
     await openPendingRepairNotification();
   } catch (error) {
-    flash(error.message || '无法开启报修通知', 'error');
+    flash(error.message || '无法开启业务通知', 'error');
   }
 }
 
@@ -1582,6 +1602,7 @@ async function loadMembers() {
       <td>${item.last_seen_at ? formatTime(item.last_seen_at) : '<span class="status muted">从未登录</span>'}</td>
       <td><button class="secondary small" data-action="edit-member" data-id="${item.id}">编辑</button> <button class="secondary small" data-action="reset-member-password" data-id="${item.id}">重置密码</button></td>
     </tr>`).join('') : '<tr><td colspan="6" class="empty">尚无成员</td></tr>';
+  renderModificationAssignees();
 }
 
 function showInitialPassword(user, title) {
@@ -1838,7 +1859,8 @@ async function loadDashboard() {
     ['已安装', data.installedEquipment, '当前在机位'],
     ['维修状态设备', data.repairingEquipment, '已报修或维修中'],
     ['未结工单', data.openWorkOrders, `其中${data.downtimeWorkOrders}张停机`],
-    ['待确认变动', data.pendingChanges, '需要管理员处理'],
+    ['执行中技改', data.activeModificationTasks, '已发布且尚未结束'],
+    ['待审技改', data.pendingModificationReviews, '管理员审核后整单生效'],
     // 近30天已完成工单的两段平均时长。还没有数据时显示"—"，不显示 0。
     ['平均响应', data.avgResponseMinutes == null ? '—' : formatDuration(data.avgResponseMinutes), '报修到技术员到场'],
     ['平均维修', data.avgRepairMinutes == null ? '—' : formatDuration(data.avgRepairMinutes), '到场到结单'],
@@ -2022,20 +2044,306 @@ async function loadEquipment(search = '') {
 }
 
 async function loadChanges() {
-  const changes = await api('/api/composition-changes');
-  document.querySelector('#change-list').innerHTML = changes.length ? changes.map((item) => `
-    <article class="stack-item"><div class="stack-title"><strong>${escapeHtml(item.change_no)} · ${labels[item.action]}</strong><span class="status ${item.status === 'PENDING' ? 'pending' : item.status === 'REJECTED' ? 'danger' : ''}">${labels[item.status] || item.status}</span></div>
-    <div class="stack-meta"><span>${escapeHtml(item.equipment_code)} ${escapeHtml(item.equipment_name)}</span><span>${escapeHtml(item.from_position_name || '未安装')} → ${escapeHtml(item.to_position_name || '移除')}</span><span>${formatTime(item.effective_at)}</span><span>提交：${escapeHtml(item.submitted_by)}</span></div>
-    <p>${escapeHtml(item.reason)}</p>${item.replacement_equipment_code ? `<p class="hint">替换为：${escapeHtml(item.replacement_equipment_code)} ${escapeHtml(item.replacement_equipment_name)}</p>` : ''}
-    ${item.status === 'PENDING' ? `<div class="stack-actions"><button class="small" data-action="review-change" data-id="${item.id}" data-decision="APPROVED">确认生效</button><button class="small danger" data-action="review-change" data-id="${item.id}" data-decision="REJECTED">驳回</button></div>` : ''}
-    </article>`).join('') : '<div class="empty">暂无设备变动申请</div>';
+  state.modificationTasks = await api('/api/modification-tasks');
+  document.querySelector('#modification-count').textContent = `${state.modificationTasks.length} 项`;
+  document.querySelector('#change-list').innerHTML = state.modificationTasks.length
+    ? state.modificationTasks.map(modificationTaskCard).join('')
+    : '<div class="empty">暂无技改任务</div>';
+  if (canManage()) {
+    const legacy = await api('/api/composition-changes');
+    document.querySelector('#legacy-change-list').innerHTML = legacy.length ? legacy.map((item) => `
+      <article class="stack-item"><div class="stack-title"><strong>${escapeHtml(item.change_no)} · ${escapeHtml(labels[item.action] || item.action)}</strong><span class="status">${escapeHtml(labels[item.status] || item.status)}</span></div>
+      <div class="stack-meta"><span>${escapeHtml(item.equipment_code)} ${escapeHtml(item.equipment_name)}</span><span>${escapeHtml(item.from_position_name || '未安装')} → ${escapeHtml(item.to_position_name || '移除')}</span><span>${formatTime(item.effective_at)}</span></div>
+      <p>${escapeHtml(item.reason)}</p></article>`).join('') : '<div class="empty">没有旧版变动历史</div>';
+    renderModificationAssignees();
+  }
 }
 
-async function reviewChange(id, decision) {
-  const note = decision === 'REJECTED' ? prompt('请输入驳回原因：') : prompt('审核备注（可留空）：') || '';
-  if (decision === 'REJECTED' && !note) return;
-  await guarded(() => api(`/api/composition-changes/${id}/review`, { method: 'POST', body: JSON.stringify({ decision, note }) }), decision === 'APPROVED' ? '设备变动已确认生效' : '申请已驳回');
-  await Promise.all([loadChanges(), loadEquipment(), loadDashboard(), refreshStructure()]);
+async function loadNotifications() {
+  state.notifications = await api('/api/notifications');
+  const card = document.querySelector('#business-notification-card');
+  if (!card) return;
+  card.hidden = state.notifications.length === 0;
+  card.innerHTML = state.notifications.length ? `
+    <div class="card-head"><div><p class="eyebrow">待办消息</p><h2>技改任务通知</h2></div><span class="pill">${state.notifications.length} 条未读</span></div>
+    <div class="stack-list">${state.notifications.map((item) => `
+      <article class="stack-item clickable" data-action="open-business-notification" data-id="${item.id}" data-entity-id="${item.entity_id}">
+        <div class="stack-title"><strong>${escapeHtml(item.title)}</strong><span>${formatTime(item.created_at)}</span></div>
+        <p>${escapeHtml(item.body)}</p>
+      </article>`).join('')}</div>` : '';
+}
+
+async function openBusinessNotification(notificationId, entityId) {
+  activateView('changes');
+  await loadChanges();
+  await openModification(entityId);
+  await api(`/api/notifications/${notificationId}/read`, { method: 'POST', body: '{}' });
+  await loadNotifications();
+}
+
+const MODIFICATION_STATUS_TONE = {
+  DRAFT: 'muted', PUBLISHED: 'pending', ACCEPTED: 'pending', ARRIVED: 'pending',
+  IN_PROGRESS: 'danger', REVISION_REQUESTED: 'danger', REVISING: 'pending',
+  PENDING_REVIEW: 'pending', RETURNED: 'danger', APPROVED: '', CANCELLED: 'muted',
+};
+
+const MODIFICATION_STATUS_NAMES = {
+  DRAFT: '草稿', PUBLISHED: '待接收', ACCEPTED: '已接收', ARRIVED: '已到场',
+  IN_PROGRESS: '施工中', REVISION_REQUESTED: '待修订', REVISING: '方案修订中',
+  PENDING_REVIEW: '待审核', RETURNED: '退回整改', APPROVED: '已通过', CANCELLED: '已取消',
+};
+
+const MODIFICATION_EVENT_NAMES = {
+  CREATED: '创建任务草稿', PLAN_UPDATED: '更新任务方案', REVISION_STARTED: '发起方案修订',
+  DOCUMENT_ADDED: '上传技术文件', PUBLISHED: '发布方案', ACKNOWLEDGED: '确认方案',
+  ARRIVED: '确认到场', STARTED: '开始施工', DEVIATION_REPORTED: '上报现场偏差',
+  ITEM_RESULT_UPDATED: '填写执行结果', ITEM_PHOTO_ADDED: '上传完工照片',
+  SUBMITTED_FOR_REVIEW: '提交管理员审核', RETURNED: '退回整改',
+  APPROVED: '审核通过', CANCELLED: '取消任务',
+};
+
+function modificationStatusName(status) {
+  return MODIFICATION_STATUS_NAMES[status] || status;
+}
+
+function modificationTaskCard(item) {
+  const overdue = item.overdue ? '<span class="status danger">已逾期</span>' : '';
+  return `<article class="stack-item clickable" data-action="open-modification" data-id="${item.id}">
+    <div class="stack-title"><strong>${escapeHtml(item.task_no)} · ${escapeHtml(item.title)}</strong><span class="status ${MODIFICATION_STATUS_TONE[item.status] || ''}">${escapeHtml(modificationStatusName(item.status))}</span>${overdue}</div>
+    <div class="stack-meta"><span>主负责人：${escapeHtml(item.primary_assignee)}</span><span>${item.item_count}项变更</span><span>第${item.revision_no}版</span><span>截止：${formatTime(item.due_at)}</span></div>
+    <p>${escapeHtml(item.objective)}</p></article>`;
+}
+
+function renderModificationAssignees() {
+  const technicians = state.members.filter((item) => item.status === 'ACTIVE' && Number(item.level) === LEVELS.TECHNICIAN);
+  replaceOptions('#modification-primary', optionList(technicians, 'id', (item) => `${item.display_name} · ${item.username}`, true));
+  const collaborators = document.querySelector('#modification-collaborators');
+  if (collaborators) collaborators.innerHTML = technicians.map((item) => `<option value="${item.id}">${escapeHtml(item.display_name)} · ${escapeHtml(item.username)}</option>`).join('');
+}
+
+function modificationStructureItems(type) {
+  const key = { WORKSHOP: 'workshops', LINE: 'lines', PROCESS: 'processes', POSITION: 'positions' }[type];
+  return key ? (state.organization?.[key] || []) : [];
+}
+
+function modificationTargetOptions(item) {
+  if (item.action === 'CREATE') return '<option value="">审核后自动创建</option>';
+  const values = item.target_type === 'EQUIPMENT' ? state.equipment : modificationStructureItems(item.target_type);
+  return `<option value="">请选择</option>${values.map((value) => `<option value="${value.id}" ${Number(item.target_id) === value.id ? 'selected' : ''}>${escapeHtml(value.code || '')} · ${escapeHtml(value.standard_name || value.name)}</option>`).join('')}`;
+}
+
+function modificationReferenceOptions(expectedType, selected) {
+  const existing = modificationStructureItems(expectedType).map((item) => ({ value: String(item.id), label: `${item.code} · ${item.name}` }));
+  const planned = state.modificationDraftItems.filter((item) => item.target_type === expectedType && item.action === 'CREATE')
+    .map((item) => ({ value: `ref:${item.client_ref}`, label: `任务新建 · ${item.payload?.code || item.title}` }));
+  return `<option value="">请选择</option>${[...existing, ...planned].map((item) => `<option value="${escapeHtml(item.value)}" ${String(selected || '') === item.value ? 'selected' : ''}>${escapeHtml(item.label)}</option>`).join('')}`;
+}
+
+function modificationEquipmentOptions(selected) {
+  return `<option value="">请选择</option>${state.equipment.map((item) => `<option value="${item.id}" ${Number(selected) === item.id ? 'selected' : ''}>${escapeHtml(item.code)} · ${escapeHtml(item.standard_name)}</option>`).join('')}`;
+}
+
+function modificationActionOptions(type, selected) {
+  const actions = type === 'EQUIPMENT'
+    ? ['INSTALL', 'MOVE', 'REMOVE', 'REPLACE', 'RETROFIT']
+    : ['CREATE', 'UPDATE', 'REPARENT', 'STATUS', 'DELETE'];
+  return actions.map((action) => `<option value="${action}" ${selected === action ? 'selected' : ''}>${escapeHtml(labels[action] || action)}</option>`).join('');
+}
+
+function modificationPayloadFields(item, index) {
+  const payload = item.payload || {};
+  if (item.target_type === 'EQUIPMENT') {
+    if (['INSTALL', 'MOVE'].includes(item.action)) {
+      const selected = payload.to_position_ref ? `ref:${payload.to_position_ref}` : payload.to_position_id;
+      return `<label>目标机位*<select data-mod-field="destination">${modificationReferenceOptions('POSITION', selected)}</select></label>`;
+    }
+    if (item.action === 'REPLACE') return `<label>替换后的设备*<select data-mod-field="replacement_equipment_id">${modificationEquipmentOptions(payload.replacement_equipment_id)}</select></label>`;
+    if (item.action === 'RETROFIT') {
+      const profile = payload.profile || {};
+      return `<div class="form-row"><label>改造后型号<input data-mod-field="profile.model" value="${escapeHtml(profile.model || '')}"></label><label>现场名称<input data-mod-field="profile.alias" value="${escapeHtml(profile.alias || '')}"></label></div>
+        <div class="form-row"><label>负责人<input data-mod-field="profile.responsible_person" value="${escapeHtml(profile.responsible_person || '')}"></label><label>基准状态<select data-mod-field="profile.status"><option value="">保持不变</option>${MANUAL_EQUIPMENT_STATUSES.map((status) => `<option value="${status}" ${profile.status === status ? 'selected' : ''}>${statusName(status)}</option>`).join('')}</select></label></div>
+        <label>档案备注<input data-mod-field="profile.notes" value="${escapeHtml(profile.notes || '')}"></label>`;
+    }
+    return '';
+  }
+  const parentType = { WORKSHOP: 'FACTORY', LINE: 'WORKSHOP', PROCESS: 'LINE', POSITION: 'PROCESS' }[item.target_type];
+  if (item.action === 'CREATE') {
+    const parentOptions = parentType === 'FACTORY'
+      ? (state.organization?.factories || []).map((x) => `<option value="${x.id}" ${Number(payload.parent_id) === x.id ? 'selected' : ''}>${escapeHtml(x.name)}</option>`).join('')
+      : modificationReferenceOptions(parentType, payload.parent_ref ? `ref:${payload.parent_ref}` : payload.parent_id);
+    return `<div class="form-row"><label>新结构编码*<input data-mod-field="code" value="${escapeHtml(payload.code || '')}"></label><label>新结构名称*<input data-mod-field="name" value="${escapeHtml(payload.name || '')}"></label></div><label>所属${escapeHtml(labels[parentType] || '工厂')}*<select data-mod-field="parent">${parentOptions}</select></label>`;
+  }
+  if (item.action === 'UPDATE') return `<div class="form-row"><label>新名称<input data-mod-field="name" value="${escapeHtml(payload.name || '')}"></label><label>新顺序<input type="number" min="1" data-mod-field="sequence_no" value="${escapeHtml(payload.sequence_no || '')}"></label></div>`;
+  if (item.action === 'REPARENT') return `<label>新的所属${escapeHtml(labels[parentType] || '工厂')}*<select data-mod-field="parent">${parentType === 'FACTORY' ? (state.organization?.factories || []).map((x) => `<option value="${x.id}">${escapeHtml(x.name)}</option>`).join('') : modificationReferenceOptions(parentType, payload.parent_ref ? `ref:${payload.parent_ref}` : payload.parent_id)}</select></label>`;
+  if (item.action === 'STATUS') return `<label>调整为<select data-mod-field="status"><option value="ACTIVE" ${payload.status === 'ACTIVE' ? 'selected' : ''}>启用</option><option value="DISABLED" ${payload.status === 'DISABLED' ? 'selected' : ''}>停用</option></select></label>`;
+  return '<p class="hint danger-text">审核时仅允许删除没有设备、安装历史和业务记录的空结构。</p>';
+}
+
+function renderModificationItems() {
+  const editor = document.querySelector('#modification-item-editor');
+  if (!editor) return;
+  editor.innerHTML = state.modificationDraftItems.length ? state.modificationDraftItems.map((item, index) => `
+    <section class="modification-item" data-mod-index="${index}"><div class="card-head compact"><strong>第${index + 1}项 · ${escapeHtml(item.title || '待填写')}</strong><button type="button" class="button-link danger small" data-remove-mod-item="${index}">删除</button></div>
+      <div class="form-row"><label>对象类型<select data-mod-field="target_type"><option value="EQUIPMENT" ${item.target_type === 'EQUIPMENT' ? 'selected' : ''}>设备</option><option value="WORKSHOP" ${item.target_type === 'WORKSHOP' ? 'selected' : ''}>车间</option><option value="LINE" ${item.target_type === 'LINE' ? 'selected' : ''}>产线</option><option value="PROCESS" ${item.target_type === 'PROCESS' ? 'selected' : ''}>工序</option><option value="POSITION" ${item.target_type === 'POSITION' ? 'selected' : ''}>机位</option></select></label><label>变更动作<select data-mod-field="action">${modificationActionOptions(item.target_type, item.action)}</select></label></div>
+      <label>变更对象<select data-mod-field="target_id">${modificationTargetOptions(item)}</select></label>
+      <label>项目标题*<input data-mod-field="title" value="${escapeHtml(item.title || '')}" maxlength="120"></label>
+      <label>施工要求*<textarea data-mod-field="instructions" rows="3">${escapeHtml(item.instructions || '')}</textarea></label>
+      ${modificationPayloadFields(item, index)}
+      <div class="form-row"><label class="check"><input type="checkbox" data-mod-field="affects_operation" ${item.affects_operation ? 'checked' : ''}>施工期间影响生产</label><label class="check"><input type="checkbox" data-mod-field="photo_required" ${item.photo_required !== false ? 'checked' : ''}>必须拍完工照</label></div>
+      <label ${item.photo_required !== false ? 'hidden' : ''} data-photo-exemption>免拍原因*<input data-mod-field="photo_exemption_reason" value="${escapeHtml(item.photo_exemption_reason || '')}"></label>
+    </section>`).join('') : '<div class="empty">请至少新增一条变更项目</div>';
+}
+
+function blankModificationItem() {
+  return { client_ref: `new-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, target_type: 'EQUIPMENT', action: 'INSTALL', target_id: '', title: '', instructions: '', payload: {}, affects_operation: true, photo_required: true };
+}
+
+function updateModificationDraftField(section, field, value) {
+  const item = state.modificationDraftItems[Number(section.dataset.modIndex)];
+  if (!item) return;
+  if (field === 'target_type') {
+    item.target_type = value; item.action = value === 'EQUIPMENT' ? 'INSTALL' : 'CREATE'; item.target_id = ''; item.payload = {};
+  } else if (field === 'action') { item.action = value; item.target_id = ''; item.payload = {}; }
+  else if (field === 'target_id') item.target_id = value ? Number(value) : null;
+  else if (field === 'affects_operation' || field === 'photo_required') item[field] = Boolean(value);
+  else if (field === 'destination') {
+    item.payload = value.startsWith('ref:') ? { to_position_ref: value.slice(4) } : { to_position_id: Number(value) };
+  } else if (field === 'parent') {
+    if (value.startsWith('ref:')) { delete item.payload.parent_id; item.payload.parent_ref = value.slice(4); }
+    else { delete item.payload.parent_ref; item.payload.parent_id = Number(value); }
+  } else if (field.startsWith('profile.')) {
+    item.payload.profile ||= {}; item.payload.profile[field.slice(8)] = value;
+  } else if (['replacement_equipment_id', 'sequence_no'].includes(field)) item.payload[field] = value ? Number(value) : null;
+  else if (['code', 'name', 'status'].includes(field)) item.payload[field] = value;
+  else item[field] = value;
+}
+
+async function uploadModificationDocuments(taskId, files) {
+  for (const file of files) {
+    const response = await fetch(`/api/modification-tasks/${taskId}/documents`, {
+      method: 'POST', credentials: 'same-origin', headers: {
+        'Content-Type': file.type || 'application/octet-stream', 'X-File-Name': encodeURIComponent(file.name),
+      }, body: file,
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error?.message || `上传${file.name}失败`);
+  }
+}
+
+function modificationTaskPayload(form) {
+  const base = formObject(form);
+  const collaborators = [...document.querySelector('#modification-collaborators').selectedOptions].map((option) => Number(option.value));
+  return {
+    ...base, primary_assignee_user_id: Number(base.primary_assignee_user_id),
+    collaborator_user_ids: collaborators,
+    items: state.modificationDraftItems.map((item, index) => ({ ...item, sequence_no: index + 1 })),
+  };
+}
+
+function resetModificationForm() {
+  const form = document.querySelector('#modification-form');
+  form.reset(); state.editingModificationId = null; state.modificationDraftItems = [blankModificationItem()];
+  document.querySelector('#modification-form-title').textContent = '新建技改任务';
+  document.querySelector('#cancel-modification-edit').hidden = true;
+  document.querySelector('#modification-document-selection').textContent = '尚未选择新文件';
+  renderModificationAssignees(); renderModificationItems();
+}
+
+function editModification(detail) {
+  if (!canManage()) return;
+  const task = detail.task;
+  state.editingModificationId = task.id;
+  state.modificationDraftItems = detail.items.map((item) => ({
+    id: item.id, client_ref: item.client_ref, target_type: item.target_type, action: item.action,
+    target_id: item.target_id, title: item.title, instructions: item.instructions, payload: item.payload,
+    affects_operation: item.affects_operation, photo_required: item.photo_required,
+    photo_exemption_reason: item.photo_exemption_reason,
+  }));
+  const form = document.querySelector('#modification-form');
+  for (const key of ['title', 'objective', 'acceptance_criteria', 'priority']) form.elements[key].value = task[key] || '';
+  form.elements.planned_start_at.value = new Date(task.planned_start_at).toISOString().slice(0, 16);
+  form.elements.due_at.value = new Date(task.due_at).toISOString().slice(0, 16);
+  renderModificationAssignees(); form.elements.primary_assignee_user_id.value = String(task.primary_assignee_user_id);
+  const collaboratorIds = new Set(detail.members.filter((m) => m.member_role === 'COLLABORATOR').map((m) => Number(m.user_id)));
+  [...document.querySelector('#modification-collaborators').options].forEach((option) => { option.selected = collaboratorIds.has(Number(option.value)); });
+  document.querySelector('#modification-form-title').textContent = `编辑 ${task.task_no}`;
+  document.querySelector('#cancel-modification-edit').hidden = false;
+  renderModificationItems(); window.scrollTo({ top: document.querySelector('#view-changes').offsetTop, behavior: 'smooth' });
+}
+
+async function openModification(id) {
+  const detail = await guarded(() => api(`/api/modification-tasks/${id}`));
+  state.selectedModification = detail;
+  const { task, members, items, documents, history } = detail;
+  const currentUserMember = members.find((member) => Number(member.user_id) === Number(state.me.user_id));
+  const isPrimary = Number(task.primary_assignee_user_id) === Number(state.me.user_id);
+  const adminActions = canManage() ? [
+    ['DRAFT', 'REVISING'].includes(task.status) ? `<button data-mod-command="edit">编辑方案</button><button data-mod-command="publish">发布第${task.revision_no + 1}版</button>` : '',
+    ['REVISION_REQUESTED', 'RETURNED', 'IN_PROGRESS', 'ARRIVED', 'ACCEPTED', 'PUBLISHED'].includes(task.status) ? '<button class="secondary" data-mod-command="revise">发起方案修订</button>' : '',
+    task.status === 'PENDING_REVIEW' ? '<button data-mod-command="approve">审核通过并整单生效</button><button class="danger" data-mod-command="return">退回整改</button>' : '',
+    !['APPROVED', 'CANCELLED'].includes(task.status) ? '<button class="secondary danger" data-mod-command="cancel">取消任务</button>' : '',
+  ].filter(Boolean).join('') : '';
+  const techActions = level() === LEVELS.TECHNICIAN ? [
+    task.status === 'PUBLISHED' && currentUserMember?.acknowledged_revision !== task.revision_no ? '<button data-mod-command="acknowledge">确认已阅读本版方案</button>' : '',
+    task.status === 'ACCEPTED' && isPrimary ? '<button data-mod-command="arrive">确认到场</button>' : '',
+    task.status === 'ARRIVED' && isPrimary ? '<button data-mod-command="start">开始施工</button>' : '',
+    ['ARRIVED', 'IN_PROGRESS', 'RETURNED'].includes(task.status) ? '<button class="secondary" data-mod-command="deviation">上报现场偏差</button>' : '',
+    ['IN_PROGRESS', 'RETURNED'].includes(task.status) && isPrimary ? '<button data-mod-command="submit">提交管理员审核</button>' : '',
+  ].filter(Boolean).join('') : '';
+  document.querySelector('#modification-detail').innerHTML = `
+    <p class="eyebrow">${escapeHtml(task.task_no)} · 第${task.revision_no}版</p><h2>${escapeHtml(task.title)}</h2>
+    <div class="stack-actions">${adminActions}${techActions}</div>
+    <div class="definition-grid"><div><small>状态</small>${escapeHtml(modificationStatusName(task.status))}</div><div><small>主负责人</small>${escapeHtml(task.primary_assignee)}</div><div><small>计划开始</small>${formatTime(task.planned_start_at)}</div><div><small>截止</small>${formatTime(task.due_at)}</div></div>
+    <section class="detail-block"><h3>目的与验收标准</h3><p>${escapeHtml(task.objective)}</p><p><strong>验收：</strong>${escapeHtml(task.acceptance_criteria)}</p></section>
+    <section class="detail-block"><h3>执行人员</h3><div class="stack-meta">${members.map((member) => `<span>${escapeHtml(member.display_name)} · ${member.member_role === 'PRIMARY' ? '主负责人' : '协作'} · ${member.acknowledged_revision === task.revision_no ? '已确认本版' : '待确认'}</span>`).join('')}</div></section>
+    <section class="detail-block"><h3>技术文件和图纸</h3>${documents.length ? documents.map((file) => `<p><a href="/api/attachments/${file.id}/file" target="_blank" rel="noopener">${escapeHtml(file.original_name)}</a> <small>第${file.revision_no || 1}版 · ${(file.size / 1024 / 1024).toFixed(1)}MB</small></p>`).join('') : '<p class="empty">尚未上传</p>'}</section>
+    <section class="detail-block"><h3>变更项目</h3>${items.map((item, index) => `<article class="modification-result" data-mod-item-id="${item.id}"><div class="stack-title"><strong>${index + 1}. ${escapeHtml(item.title)}</strong><span class="status">${escapeHtml(labels[item.target_type])} · ${escapeHtml(labels[item.action] || item.action)}</span>${item.affects_operation ? '<span class="status pending">影响生产</span>' : ''}</div><p>${escapeHtml(item.instructions)}</p>
+      ${['IN_PROGRESS', 'RETURNED'].includes(task.status) && level() === LEVELS.TECHNICIAN ? `<label>实际执行结果*<textarea data-mod-result rows="3">${escapeHtml(item.execution_result || '')}</textarea></label><button class="secondary small" data-save-mod-result>保存本项结果</button><label class="button-link file-button small">现场拍照<input type="file" accept="image/*" capture="environment" multiple data-mod-photo></label>` : item.execution_result ? `<p><strong>实际结果：</strong>${escapeHtml(item.execution_result)}</p>` : '<p class="hint">尚未填写结果</p>'}
+      ${item.attachments?.length ? `<div class="photo-grid readonly">${item.attachments.map((photo) => `<figure class="photo-thumb"><img src="/api/attachments/${photo.id}/file" alt="${escapeHtml(photo.original_name || '完工照片')}" loading="lazy"></figure>`).join('')}</div>` : item.photo_required ? '<p class="hint">本项必须上传完工照片</p>' : `<p class="hint">免拍：${escapeHtml(item.photo_exemption_reason || '')}</p>`}</article>`).join('')}</section>
+    ${task.completion_summary ? `<section class="detail-block"><h3>施工总结</h3><p>${escapeHtml(task.completion_summary)}</p>${task.outstanding_issues ? `<p><strong>遗留问题：</strong>${escapeHtml(task.outstanding_issues)}</p>` : ''}</section>` : ''}
+    <section class="detail-block"><h3>全过程记录</h3><div class="timeline">${history.map((event) => `<div><strong>${escapeHtml(MODIFICATION_EVENT_NAMES[event.event_type] || event.event_type)}</strong><span>${formatTime(event.created_at)} · ${escapeHtml(event.actor)}</span>${event.note ? `<p>${escapeHtml(event.note)}</p>` : ''}</div>`).join('')}</div></section>`;
+  const drawer = document.querySelector('#modification-drawer'); drawer.hidden = false;
+  drawer.querySelectorAll('[data-close-modification]').forEach((node) => { node.onclick = () => { drawer.hidden = true; }; });
+  drawer.querySelectorAll('[data-mod-command]').forEach((button) => { button.onclick = () => modificationCommand(button.dataset.modCommand); });
+  drawer.querySelectorAll('[data-save-mod-result]').forEach((button) => { button.onclick = () => saveModificationResult(button.closest('[data-mod-item-id]')); });
+  drawer.querySelectorAll('[data-mod-photo]').forEach((input) => { input.onchange = () => uploadModificationPhotos(input.closest('[data-mod-item-id]'), input); });
+}
+
+async function modificationCommand(command) {
+  const detail = state.selectedModification; if (!detail) return;
+  const id = detail.task.id;
+  if (command === 'edit') { document.querySelector('#modification-drawer').hidden = true; return editModification(detail); }
+  let action = command; let body = {};
+  if (command === 'revise') { const reason = prompt('请输入方案修订原因：'); if (!reason) return; body = { reason }; }
+  if (command === 'deviation') { const note = prompt('请写清现场偏差和建议：'); if (!note) return; body = { note }; action = 'deviation'; }
+  if (command === 'submit') {
+    const completion_summary = prompt('请填写整单施工总结：'); if (!completion_summary) return;
+    const outstanding_issues = prompt('遗留问题（没有可留空）：') || ''; body = { completion_summary, outstanding_issues }; action = 'submit-review';
+  }
+  if (command === 'approve') { if (!confirm('确认全部项目与现场一致，并立即整单更新设备和产线数据？')) return; body = { decision: 'APPROVED', note: prompt('审核备注（可留空）：') || '' }; action = 'review'; }
+  if (command === 'return') { const note = prompt('请输入退回整改原因：'); if (!note) return; body = { decision: 'RETURNED', note }; action = 'review'; }
+  if (command === 'cancel') { const reason = prompt('请输入取消原因：'); if (!reason) return; body = { reason }; }
+  if (command === 'publish' && !confirm(`确认发布第${detail.task.revision_no + 1}版方案？所有执行人都必须重新确认。`)) return;
+  await guarded(() => api(`/api/modification-tasks/${id}/${action}`, { method: 'POST', body: JSON.stringify(body) }), '技改任务已更新');
+  await Promise.all([loadChanges(), loadEquipment(), refreshStructure(), loadDashboard()]);
+  if (command === 'revise') {
+    const revised = await api(`/api/modification-tasks/${id}`); document.querySelector('#modification-drawer').hidden = true; editModification(revised);
+  } else await openModification(id);
+}
+
+async function saveModificationResult(section) {
+  const taskId = state.selectedModification.task.id; const itemId = section.dataset.modItemId;
+  const execution_result = section.querySelector('[data-mod-result]').value;
+  await guarded(() => api(`/api/modification-tasks/${taskId}/items/${itemId}/result`, { method: 'PUT', body: JSON.stringify({ execution_result }) }), '本项执行结果已保存');
+  await openModification(taskId);
+}
+
+async function uploadModificationPhotos(section, input) {
+  const taskId = state.selectedModification.task.id; const itemId = section.dataset.modItemId;
+  const attachments = [];
+  for (const file of input.files) attachments.push(await compressImage(file));
+  await guarded(() => api(`/api/modification-tasks/${taskId}/items/${itemId}/photos`, { method: 'POST', body: JSON.stringify({ attachments }) }), '完工照片已上传');
+  await openModification(taskId);
 }
 
 const WITHDRAWABLE = ['SUBMITTED', 'ACCEPTED'];
@@ -3236,14 +3544,14 @@ function openStructureDrawer(kind, parentId, id = null) {
 function prepareInstall(positionId) {
   const position = findTreeItem('position', positionId);
   document.querySelector('[data-view="changes"]').click();
-  document.querySelector('#change-position').value = String(positionId);
-  if (position?.equipment) {
-    document.querySelector('#change-action').value = 'REPLACE';
-    setEquipmentPicker('change', { equipmentId: position.equipment.id });
-  } else {
-    document.querySelector('#change-action').value = 'INSTALL';
-  }
-  document.querySelector('#change-action').dispatchEvent(new Event('change'));
+  state.modificationDraftItems = [{
+    ...blankModificationItem(), action: position?.equipment ? 'REPLACE' : 'INSTALL',
+    target_id: position?.equipment?.id || '', title: position?.equipment ? '更换机位设备' : '安装设备',
+    instructions: `按批准方案在${position?.name || '目标机位'}完成施工`,
+    payload: position?.equipment ? {} : { to_position_id: positionId },
+  }];
+  renderModificationItems();
+  document.querySelector('#modification-form [name="title"]').focus();
 }
 
 function showEquipmentImportPreview(file, contentBase64, preview) {
@@ -3315,9 +3623,9 @@ async function refreshAll() {
   await loadMeta();
   const tasks = [loadOrganization(), loadEquipment(), loadWorkOrders(), loadFaultCodes(), loadQuickFaults()];
   if (current >= LEVELS.TECHNICIAN) {
-    tasks.push(loadDashboard(), loadOrganizationTree(), loadEquipmentTypes(), loadPatrols(), loadMyReviewSummary());
+    tasks.push(loadDashboard(), loadNotifications(), loadOrganizationTree(), loadEquipmentTypes(), loadPatrols(), loadMyReviewSummary(), loadChanges());
   }
-  if (current >= LEVELS.MANAGER) tasks.push(loadChanges(), loadMembers());
+  if (current >= LEVELS.MANAGER) tasks.push(loadMembers());
   await Promise.all(tasks);
 }
 
@@ -3441,6 +3749,7 @@ document.querySelectorAll('.nav-item').forEach((button) => button.addEventListen
   if (button.dataset.view === 'reports') await guarded(loadOperationalReport);
   if (button.dataset.view === 'fault-codes') await guarded(loadFaultCodeAdmin);
   if (button.dataset.view === 'reviews') await guarded(loadReviewAdmin);
+  if (button.dataset.view === 'changes') await guarded(loadChanges);
 }));
 
 const refreshHandlers = {
@@ -3448,6 +3757,7 @@ const refreshHandlers = {
   patrol: loadPatrols, 'fault-codes': loadFaultCodeAdmin, dashboard: loadDashboard,
   inspection: () => loadTaskModule('inspection'),
   maintenance: () => loadTaskModule('maintenance'),
+  changes: loadChanges,
   reports: loadOperationalReport,
 };
 document.querySelectorAll('[data-refresh]').forEach((button) =>
@@ -3502,20 +3812,56 @@ document.querySelector('#composition-import').addEventListener('change', async (
   event.target.value = '';
 });
 
-document.querySelector('#change-action').addEventListener('change', (event) => {
-  const value = event.target.value;
-  document.querySelector('#replacement-wrap').hidden = value !== 'REPLACE';
-  document.querySelector('#to-position-wrap').hidden = ['REMOVE', 'REPLACE'].includes(value);
+document.querySelector('#add-modification-item').addEventListener('click', () => {
+  state.modificationDraftItems.push(blankModificationItem());
+  renderModificationItems();
 });
-document.querySelector('#change-form').addEventListener('submit', async (event) => {
+document.querySelector('#modification-item-editor').addEventListener('input', (event) => {
+  const field = event.target.dataset.modField;
+  if (!field) return;
+  updateModificationDraftField(event.target.closest('[data-mod-index]'), field,
+    event.target.type === 'checkbox' ? event.target.checked : event.target.value);
+});
+document.querySelector('#modification-item-editor').addEventListener('change', (event) => {
+  const field = event.target.dataset.modField;
+  if (!field) return;
+  updateModificationDraftField(event.target.closest('[data-mod-index]'), field,
+    event.target.type === 'checkbox' ? event.target.checked : event.target.value);
+  if (['target_type', 'action', 'photo_required'].includes(field)) renderModificationItems();
+});
+document.querySelector('#modification-item-editor').addEventListener('click', (event) => {
+  const remove = event.target.closest('[data-remove-mod-item]');
+  if (!remove) return;
+  state.modificationDraftItems.splice(Number(remove.dataset.removeModItem), 1);
+  renderModificationItems();
+});
+document.querySelector('#modification-documents').addEventListener('change', (event) => {
+  const files = [...event.target.files];
+  document.querySelector('#modification-document-selection').textContent = files.length
+    ? files.map((file) => `${file.name}（${(file.size / 1024 / 1024).toFixed(1)}MB）`).join('、')
+    : '尚未选择新文件';
+});
+document.querySelector('#cancel-modification-edit').addEventListener('click', resetModificationForm);
+document.querySelector('#modification-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
-  await guarded(() => api('/api/composition-changes', { method: 'POST', body: JSON.stringify(formObject(form)) }), '设备变动申请已提交');
-  form.reset();
-  refreshEquipmentPicker('change');
-  refreshEquipmentPicker('replacement');
-  document.querySelector('#change-action').dispatchEvent(new Event('change'));
-  await Promise.all([loadChanges(), loadDashboard()]);
+  if (!state.modificationDraftItems.length) return flash('请至少新增一条变更项目', 'error');
+  const payload = modificationTaskPayload(form);
+  let saved;
+  try {
+    saved = await guarded(() => api(state.editingModificationId
+      ? `/api/modification-tasks/${state.editingModificationId}` : '/api/modification-tasks', {
+      method: state.editingModificationId ? 'PUT' : 'POST', body: JSON.stringify(payload),
+    }), '技改任务草稿已保存');
+    const files = [...document.querySelector('#modification-documents').files];
+    if (files.length) await uploadModificationDocuments(saved.task.id, files);
+  } catch (error) {
+    flash(error.message || '技改任务保存失败', 'error');
+    return;
+  }
+  resetModificationForm();
+  await loadChanges();
+  await openModification(saved.task.id);
 });
 
 document.querySelector('#repair-form').addEventListener('submit', async (event) => {
@@ -3677,7 +4023,8 @@ document.addEventListener('click', (event) => {
     case 'equipment-profile': openEquipmentProfile(id); break;
     case 'show-label': showLabel(id); break;
     case 'open-label-batch': openLabelBatch(); break;
-    case 'review-change': reviewChange(id, trigger.dataset.decision); break;
+    case 'open-modification': openModification(id); break;
+    case 'open-business-notification': openBusinessNotification(id, Number(trigger.dataset.entityId)); break;
     case 'claim-work-order': claimWorkOrder(id); break;
     case 'withdraw-work-order': {
       const item = state.workOrders.find((candidate) => candidate.id === id);
@@ -3707,7 +4054,7 @@ document.addEventListener('keydown', (event) => {
   trigger.click();
 });
 
-window.reviewChange = reviewChange;
+window.openModification = openModification;
 window.openWorkOrder = openWorkOrder;
 window.claimWorkOrder = claimWorkOrder;
 window.showLabel = showLabel;
@@ -3775,7 +4122,8 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-document.querySelector('#change-effective').value = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+state.modificationDraftItems = [blankModificationItem()];
+renderModificationItems();
 document.querySelector('#report-end').value = new Date().toISOString().slice(0, 10);
 document.querySelector('#report-start').value = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
 setupMobileToolbars();

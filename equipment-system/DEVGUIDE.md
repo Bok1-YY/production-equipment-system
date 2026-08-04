@@ -2,7 +2,7 @@
 
 > 生产设备的**编码建档 → 产线组合 → 报修维修**闭环系统。三级成员（普工／技术员／管理员），扫码报修，设备状态跟着工单自动走。
 > 技术选型是刻意"极简"：Node 内置 HTTP + 内置 SQLite + 零框架前端，**全部运行期依赖只有 2 个包**（exceljs、qrcode）。工厂单机部署，双击图标即用。
-> 本手册按当前真实代码（2026-07）维护，**开头就是启动**。读完「零」即可跑起来；要改代码再往下看。
+> 本手册按当前真实代码（2026-08）维护，**开头就是启动**。读完「零」即可跑起来；要改代码再往下看。
 
 ---
 
@@ -60,7 +60,7 @@ npm run dev          # node --watch，改完自动重启
 ### 0.5 跑测试
 
 ```bash
-npm test                                   # node --test，当前 151 项（150 通过，1 项缺现场真实台账时跳过）
+npm test                                   # node --test，当前 156 项（155 通过，1 项缺现场真实台账时跳过）
 node scripts/http-smoke.js                 # HTTP 冒烟（需服务在跑）
 SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码后
 ```
@@ -76,20 +76,21 @@ SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码
 ┌───────────────────────────────────────────────────────┐
 │  web/  零框架前端（无构建、无 npm 依赖、无打包）          │
 │    index.html  单页 + 12 个 <section class="view">     │
-│    app.js      3179 行原生 JS，按级别渲染               │
+│    app.js      4131 行原生 JS，按级别渲染               │
 │    styles.css  设计令牌 + 760px 移动端断点              │
 └───────────────────────────┬───────────────────────────┘
                             ▼
 ┌───────────────────────────────────────────────────────┐
-│  src/server.js  Node 内置 http，826 行                  │
+│  src/server.js  Node 内置 http，900 行                  │
 │    · 会话解析（Cookie → users）→ context               │
-│    · 96 条 if 分支路由（无框架）                        │
+│    · 109 条 if 分支路由（无框架）                       │
 │    · 静态文件服务（web/ 目录）                          │
 └───────────────────────────┬───────────────────────────┘
                             ▼
 ┌───────────────────────────────────────────────────────┐
-│  src/service.js  EquipmentService，130 个方法，3344 行   │
+│  src/service.js  EquipmentService，3626 行               │
 │    全部业务逻辑：台账/编码/组合/工单/成员/履历/审计      │
+│    + modifications.js 1042 行，安装技改任务领域方法      │
 │    ── 依赖 ──▶ domain.js（校验+状态机+常量，无 IO）      │
 │              ▶ auth.js  （scrypt+会话+级别映射）        │
 │              ▶ spreadsheets.js（exceljs 读写）          │
@@ -98,14 +99,14 @@ SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码
 ┌───────────────────────────────────────────────────────┐
 │  src/db.js  node:sqlite（Node 22.5+ 内置）              │
 │    openDatabase() = 建库 + migrate + 种子 + 种管理员    │
-│    34 张表，WAL 模式；Windows 运行库 factory-data/equipment.db │
+│    40 张表，WAL 模式；Windows 运行库 factory-data/equipment.db │
 └───────────────────────────────────────────────────────┘
 ```
 
 四条铁律：
 
 1. **依赖只增不减是禁忌**。目前运行期依赖只有 `exceljs`（Excel 导入导出）和 `qrcode`（铭牌二维码）。密码哈希用 `node:crypto` 的 scrypt，数据库用 `node:sqlite`，HTTP 用 `node:http`——**加新依赖前先确认 Node 标准库真的做不到**。这套系统要在工厂的电脑上双击就能跑，装不上 npm 包的时候不能瘫。
-2. **业务逻辑全在 `service.js`**，`server.js` 只做路由和会话解析，`domain.js` 只做校验和常量（纯函数、无 IO、可单独测）。加功能优先落 service。
+2. **业务逻辑在 `service.js` 及其扩展模块**，`modifications.js` 通过 `installModificationMethods()` 安装技改领域方法；`server.js` 只做路由和会话解析，`domain.js` 只做校验和常量（纯函数、无 IO、可单独测）。加功能不能把业务规则塞进路由。
 3. **权限在服务端判，前端隐藏只是为了界面清爽**。`applyLevelUi()` 藏掉的入口不构成安全边界；每个写接口都必须有 `assertRole`。
 4. **身份只从会话 Cookie 来**。任何"从请求头/请求体读取角色"的写法都是回到 2026-07-26 之前那个可以随手伪造管理员的状态，一律拒绝。
 
@@ -116,23 +117,25 @@ SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码
 ```
 equipment-system/
 │  ── 后端 ──
-├── src/server.js        HTTP 层：会话解析、99 条路由、静态服务、错误映射
-├── src/service.js       ★ 全部业务：EquipmentService，130 个方法
+├── src/server.js        HTTP 层：会话解析、109 条路由、静态服务、错误映射
+├── src/service.js       ★ 全部业务：EquipmentService（含 modifications.js 安装的技改方法，合计约 150 个）
 ├── src/domain.js        纯逻辑：文本/编号校验、设备编码格式、工单状态机、
 │                        设备状态常量（手工 4 态 vs 系统 2 态）、角色断言
 ├── src/auth.js          scrypt 哈希、会话签发/解析/续期、级别→角色映射、Cookie 解析
-├── src/db.js            建库与迁移（34 张表）、ensureColumn 增量加列、
+├── src/db.js            建库与迁移（40 张表）、ensureColumn 增量加列、
 │                        种子工厂车间、种子管理员、nextSequence、transaction
+├── src/modifications.js 技改任务领域服务：版本、留证、审核事务、通知
 ├── src/spreadsheets.js  exceljs：台账/组合模板生成、工作簿解析、组合导出
 ├── src/equipment-types.js  默认设备类型代码表（EXT/MIX/PUL…）
 ├── src/fault-codes.js   预置故障代码建议值（三级结构，待设备科确认）
 │
 │  ── 前端（零构建）──
-├── web/index.html       单页外壳 + 登录闸门 + 9 个视图 section
+├── web/index.html       单页外壳 + 登录闸门 + 12 个视图 section
 ├── web/app.js           ★ 全部前端逻辑（无框架、无模块化、按顺序执行）
+├── web/scanner-utils.js 扫码解析工具（供 app.js 与测试共用）
 ├── web/styles.css       设计令牌（:root 变量）+ 组件样式 + 760px 移动端断点
 │
-│  ── 测试（node --test，151 项）──
+│  ── 测试（node --test，156 项）──
 ├── test/domain.test.js            编码格式与状态机（纯函数）
 ├── test/service.test.js           台账/编码/组合/导入/结构删除/工单/层级字段（12 项）
 ├── test/auth.test.js              密码/会话/三级/成员管理/工单可见性（11 项）
@@ -149,12 +152,25 @@ equipment-system/
 ├── test/spreadsheets.test.js      模板生成与回读
 ├── test/http-security.test.js     Host/Origin、登录锁定、幂等与错误边界
 ├── test/scheduled-tasks.test.js   点检保养计划、执行、异常与报表
+├── test/database-startup.test.js  缺库拒启与数据库启动保护
+├── test/mobile-scanner.test.js    扫码解析工具（scanner-utils）
+├── test/operational-report.test.js 运营报表聚合与下钻
+├── test/work-order-repair-redesign.test.js 维修阶段重构：核对/开工/试运行边界
+├── test/modification-tasks.test.js 技改任务：全员确认、修订、审核事务与整单回滚（4 项）
+├── test/modification-http.test.js  技改 HTTP 闭环：文件上传、通知、留证与审核应用（1 项）
 │
 │  ── 脚本 ──
 ├── scripts/http-smoke.js          HTTP 冒烟：401 拦截→登录→建设备→二维码→登出
+├── scripts/browser-smoke.js       无头浏览器实跑 + 360/412 宽度几何检查
+├── scripts/load-smoke.js          并发负载冒烟
+├── scripts/backup-production.js / restore-production.js / verify-backup.js  备份、恢复与校验
+├── scripts/production-preflight.js  上线前预检
+├── scripts/inspect-database.js    只读检查数据库
 ├── scripts/generate-templates.js  生成 导入模板/*.xlsx
 ├── scripts/build-ledger-composition.js      从原始台账推导组合表
 ├── scripts/generate-equipment-naming-workbook.js  生成命名建议工作簿
+├── scripts/seed-android-runtime-fixture.js  安卓真机测试隔离库种子（刻意不叫 *.test.js）
+├── scripts/*.ps1                  Windows 启停与安卓测试服务器（§6.10）
 │
 ├── factory-data/equipment.db  ★ Windows 日常运行库（含 -wal/-shm，不入 Git）
 ├── factory-data/attachments/  工厂运行库配套附件（不入 Git）
@@ -175,7 +191,7 @@ equipment-system/
 
 ---
 
-## 三、数据模型（34 张表）
+## 三、数据模型（40 张表）
 
 ### 3.1 组织结构（五级）
 
@@ -193,6 +209,17 @@ factories(工厂) → workshops(车间) → production_lines(产线) → process
   - `one_active_installation_per_equipment`：一台设备同时只能在一个机位；
   - `one_active_equipment_per_position`：一个机位同时只能有一台设备。
 - `composition_changes`：安装/移动/拆除/替换的**申请单**，两步走（提交 → 管理员确认）。审核通过时才写 `equipment_installations`，且**审核时重新校验现场状态**（位置可能已被别人占了）。
+
+`composition_changes` 现为只读兼容历史。新业务使用完整的技改任务模型：
+
+- `modification_tasks`：任务头、版本、计划时间、状态、施工总结和审核信息；
+- `modification_task_members`：主负责人/协作技工及已确认的方案版本；
+- `modification_task_items`：一张任务内的设备或结构变更项目、审批时状态快照、施工结果和拍照要求；
+- `modification_task_revisions`：每次发布的不可变方案快照；
+- `modification_task_history`：草稿、发布、确认、到场、施工、偏差、提交和审核全过程；
+- `user_notifications`：分配、修订、待审核和审核结果的业务通知，供网页和 Android 轮询。
+
+任务状态为 `DRAFT → PUBLISHED → ACCEPTED → ARRIVED → IN_PROGRESS → PENDING_REVIEW → APPROVED`。现场偏差走 `REVISION_REQUESTED → REVISING → PUBLISHED`，整改走 `RETURNED`，终止走 `CANCELLED`。发布时保存现场快照；审核通过时必须在同一个 `BEGIN IMMEDIATE` 事务内重新校验并应用所有项目，任一项目失败必须整单回滚。活动且影响生产的项目参与设备/产线派生状态：维修态优先，其次 `MODIFYING`／`ADJUSTING`，最后回到档案基准状态。
 
 ### 3.3 设备状态（六态，两套来源）
 
@@ -241,7 +268,7 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
 - **推进工单要求是接单人本人**（`assertOwnWorkOrder`），管理员不受限。否则张三接的单李四能一路点到结单，而工单上的负责人和报修人的评价都算在张三头上。别人要接手得让管理员转派（历史里留 `REASSIGNED`）。
 - **转派一张已经在修的单不会把它退回上一阶段**：`assignWorkOrder` 只在 `SUBMITTED` 时把状态推到 `ACCEPTED`，其余情况保持当前状态。
 - `WITHDRAWABLE_STATUSES` = `['SUBMITTED', 'ACCEPTED']`，含义不变：技术员到场前。
-- `WAITING_PARTS` / `OUTSOURCED` 只能回到 `IN_PROGRESS`，不能直接跳去试运行。
+- `WAITING_PARTS` / `OUTSOURCED` 只能回到 `IN_PROGRESS` 或 `ARRIVED`（报修信息要纠错时），不能直接跳去试运行。
 - **`CANCELLED` 现在从任何未结状态可达**（仅管理员）。原先 `ARRIVED` 之后既不能撤回也不能取消，而结单要满足完整性硬校验——一张误接的垃圾单会永远挂在列表里。这是补死角，不是放权。
 - **`PENDING_REVIEW` 是历史遗留**。2026-07-26 取消了"管理员验收"环节，`TRIAL_RUN` 直通 `COMPLETED`。这个状态仍保留可达 `COMPLETED`，因为改造前可能有工单正停在那里，删掉它们就永远结不了单。**不要因为"看起来没用"就删。**
 - `assertWorkOrderTransition(from, to)` 拦非法跳转。
@@ -299,7 +326,7 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
   - `is_common`：进不进普工报修页的「常见故障」快捷按钮。`frequentFaultCodes()` 先按该设备类型的历史频次排，**库里还没有工单时回退到 `is_common`**——否则第一天打开报修页是一排空按钮。加这个标记而不是硬编码"综合类优先"，是因为类别名管理员可以改，magic string 会静默失效。
     - `ensureColumn` 加列后有一次 `backfillCommonFaultCodes()`：只动 `is_seeded=1` 的行，且**任意一条已为 1 就不再补**——否则管理员取消掉的标记会在重启后复活（和"删掉的预置项不复活"同一个原则）。
   - 已被工单引用的只能停用不能删。
-- `attachments`：多态附件表（`target_type` 为 `WORK_ORDER` / `WORK_ORDER_COMPLETION` / `PATROL` / `TASK` / `WORK_ORDER_REVIEW`）。其中 `WORK_ORDER_COMPLETION` 是巡检转维修后的专用完成凭证，不能由普通工单照片替代。文件落 `data/attachments/YYYYMM/<32位随机名>.<ext>`，库里只存相对路径。
+- `attachments`：多态附件表（`target_type` 为 `WORK_ORDER` / `WORK_ORDER_COMPLETION` / `PATROL` / `TASK` / `WORK_ORDER_REVIEW` / `MODIFICATION_ITEM` / `MODIFICATION_DOCUMENT`）。其中 `WORK_ORDER_COMPLETION` 是巡检转维修后的专用完成凭证，不能由普通工单照片替代；`MODIFICATION_ITEM` 是技改项目完工照片，`MODIFICATION_DOCUMENT` 是技改任务技术文件（PDF/Office/DWG 等，走原始流上传，不限于图片）。文件落 `data/attachments/YYYYMM/<32位随机名>.<ext>`，库里只存相对路径。
   - **服务端只认魔数字节**（JPEG `FF D8 FF`、PNG `89 50 4E 47`、WEBP `RIFF....WEBP`），绝不信前端声明的 mime——否则改个扩展名就能上传任意文件。
   - 单张 ≤2MB、每个对象 ≤6 张、解码后合计 ≤12MB；base64 做严格往返校验。前端先用 canvas 压到长边 1600px 再提交。
   - 落盘和写库在同一个 `transaction()` 里；任何一张失败都会 `unlinkSync` 清掉同批已写下的文件，不留孤儿。
@@ -382,7 +409,7 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
 
 ---
 
-## 五、后端：`server.js` 的 99 条路由
+## 五、后端：`server.js` 的 109 条路由
 
 ### 5.1 请求流程
 
@@ -390,9 +417,10 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
 http.createServer
   └─ /api/* → handleApi()
        ├─ contextFrom(request)：Cookie → resolveSession → {actor,user_id,level,role}
-       ├─ 公开白名单：GET /api/health、POST /api/session
+       ├─ 公开白名单：GET /api/health(/live/ready)、POST /api/session
        ├─ 无会话 → 401 UNAUTHORIZED
-       ├─ must_change_password → 除改密/登出外全部 403 PASSWORD_CHANGE_REQUIRED
+       ├─ must_change_password → 除改密/登出/GET /api/session/me/
+       │   DELETE /api/notification-device 外全部 403 PASSWORD_CHANGE_REQUIRED
        └─ 顺序匹配 if (method === 'X' && (params = match(pathname, /正则/)))
   └─ 其他 → serveStatic()（路径归一化防穿越，Cache-Control: no-cache）
 错误统一在 createServer 的 catch 里映射：DomainError → 它自己的 status/code；其余 → 500
@@ -402,12 +430,14 @@ http.createServer
 
 - **会话** `POST /api/session`(登录，下发 Cookie) · `DELETE /api/session`(登出) · `GET /api/session/me` · `POST /api/session/password`(改密)
 - **成员**（均 L3）`GET|POST /api/users` · `PUT /api/users/:id` · `POST /api/users/:id/reset-password`
-- **元信息** `GET /api/meta`(角色/级别/工单状态/变动类型) · `GET /api/dashboard`(6 个统计) · `GET /api/health`
+- **元信息** `GET /api/meta`(角色/级别/工单状态/变动类型) · `GET /api/dashboard`(12 项统计) · `GET /api/health`
 - **组织结构** `GET /api/organization` · `GET /api/organization/tree`(带当前设备) · `POST|PUT /api/{workshops,lines,processes,positions}` · `GET /api/structure/:type/:id/delete-preview` · `DELETE /api/structure/:type/:id`
 - **设备类型** `GET|POST /api/equipment-types` · `PUT|DELETE /api/equipment-types/:id`
 - **设备** `GET /api/equipment?search=` · `POST /api/equipment` · `GET|PUT /api/equipment/:id` · **`GET /api/equipment/:id/history`**(设备履历，L2+)
 - **导入导出** `GET /api/templates` + 两个 `/download` · `POST /api/imports/{equipment,line-composition}/{preview,commit}` · `GET /api/exports/line-composition.xlsx`
-- **组合变动** `GET|POST /api/composition-changes` · `POST /api/composition-changes/:id/review`
+- **旧版组合变动** `GET /api/composition-changes`（只读历史）；旧 `POST` 与审核入口返回 410
+- **技改任务** `GET|POST /api/modification-tasks` · `GET|PUT /api/modification-tasks/:id` · `POST :id/{publish,acknowledge,arrive,start,deviation,revise,submit-review,review,cancel}` · `PUT :id/items/:itemId/result` · `POST :id/items/:itemId/photos` · `POST :id/documents`（原始流）
+- **业务通知** `GET /api/notifications` · `POST /api/notifications/:id/read` · `POST /api/notification-device`（网页会话或 Android Bearer 令牌）
 - **工单** `GET|POST /api/work-orders` · `GET /api/work-orders/:id` · `POST :id/assign` · `POST :id/transition` · `PUT :id/repair-detail` · `POST :id/correct-equipment` · `POST :id/parts`
 - **二维码** `GET /api/qr/:token`(解析并记扫描日志) · `GET /api/qr/:token/image.svg`(实时生成 SVG) · `GET /api/qr/process-labels`
 - **评价** `POST /api/work-orders/:id/{withdraw,review,reopen}` · `GET /api/reviews/me`（L2 只看自己的综合分）· `GET /api/reviews`、`GET /api/reviews/technicians`（均 L3）
@@ -459,7 +489,7 @@ form.addEventListener('submit', async (event) => {
 **普工页从第一轮起就是这个样子，一直没被发现**，因为前几轮的浏览器实测只断言 DOM 取值（选中项、文案、角标），**从来没量过一个元素的宽度**。用户截图一发过来才暴露。
 
 - 修法：`applyLevelUi()` 里同时 `shell.classList.toggle('no-sidebar', ...)`，CSS `.shell.no-sidebar { grid-template-columns: 1fr; }`。不用 `:has()`，显式类不依赖浏览器特性。
-- 教训写进验证流程：**改了按级别显示/隐藏的布局，就要量几何**——`scrollWidth` vs `innerWidth`、关键容器的 `getBoundingClientRect().width`、标题的高度（折行的信号）。`browser-layout.js` 就是干这个的，它把管理员页作为对照一起量，并在 1600/900/480/380 四个宽度下检查横向溢出。
+- 教训写进验证流程：**改了按级别显示/隐藏的布局，就要量几何**——`scrollWidth` vs `innerWidth`、关键容器的 `getBoundingClientRect().width`、标题的高度（折行的信号）。这类测量现在由 `scripts/browser-smoke.js` 承担：把管理员页作为对照一起量，并在 360/412 移动宽度下检查横向溢出。
 - 已知且刻意保留：`body { min-width: 1080px }`，所以 760~1080px 之间会有横向滚动条。桌面优先是既有决定，响应式归到手机化路线图。
 
 ### 6.1c `hidden` 属性会被任何写了 `display` 的规则盖掉 ⚠️ 已踩
@@ -561,18 +591,20 @@ token 本身是稳定映射（存在 `qr_mappings`），换地址只需改环境
 - **停机时长双口径**：`started_at`/`completed_at` 自动记录，`downtime_minutes` 由技术员手填，两者可能打架。
 - **变动申请不能撤回**：`CHANGE_STATUSES` 里定义了 `CANCELLED` 但全代码从不使用。
 - **审核用 `prompt()`**：`reviewChange()` 还在用浏览器原生弹窗填驳回原因，看不到申请详情，移动端体验差。
-- **`service.js` 已 3504 行**：目前还能一个文件装下，但成员管理、计划任务、运营报表和履历聚合已形成相对独立的功能组；将来真要拆，优先按这些边界拆。
+- **`service.js` 已 3626 行**：技改任务已按此思路拆到 `modifications.js`（`installModificationMethods()` 安装到同一个类上）；成员管理、计划任务、运营报表和履历聚合也已形成相对独立的功能组，将来继续按这些边界拆。
 
 ### 6.10 Android 改动必须跑 APK，不以“能打包”为验收
 
-Web 冒烟不能覆盖 Android 权限、Intent、FileProvider、系统相机和 WebView CSP。2026-08-04 的真实模拟器测试连续挡下两个只在 APK 中出现的问题：`<input capture>` 在 Android 15 打开了 Photo Picker 而不是相机；原生相机回传后又被 CSP 拒绝 `fetch(data:)`。因此涉及扫码、拍照、通知、服务器切换或 Capacitor 桥的改动必须完成以下最小闭环：
+Web 冒烟不能覆盖 Android 权限、Intent、FileProvider、系统相机和 WebView CSP。涉及扫码、拍照、通知、服务器切换或 Capacitor 桥的改动必须完成以下最小闭环：
 
 1. `cap sync android` 后运行 Android 单元测试、`lintDebug`、`assembleDebug` 和 `assembleDebugAndroidTest`；
-2. 在真机或带硬件加速的 Android 模拟器安装 APK，确认冷启动和登录；
+2. 在真实 Android 设备安装 APK，确认冷启动和登录；模拟器只能作为补充，不能代替真机验收；
 3. 实际点击权限按钮和系统组件，不只调用插件方法；
 4. 拍照后必须回到应用，看到带水印缩略图且业务提交按钮解锁；
 5. 用 `adb shell dumpsys activity activities` 核对前台是相机 `CaptureActivity`，不是 Photo Picker；
 6. 直接运行 instrumentation，看到 `OK` 后才算通过。
+
+技改任务通知由 `RepairNotificationService` 一并轮询。前台服务同时读取维修待接单和 `/api/notifications`，按业务通知 ID 去重；点击技改通知向 `MainActivity` 传入 `modification_task_id` / `notification_id`，Capacitor 插件消费后调用 `openModification()` 并标记已读。通知设备注册的请求体必须显式 `JSON.stringify()`，所有无字段的 JSON POST 也要发送 `{}`，否则 Node JSON 解析器会返回 `INVALID_JSON`。
 
 Windows 没有 WSL 也不能成为不测的理由：可以使用便携 JDK 21、Android command-line tools、WHPX 模拟器。`scripts/start-android-runtime-test-server.ps1` 只监听 `127.0.0.1` 并把数据库限制在 `%TEMP%\ysm-android-runtime-test`；模拟器专用构建临时指向 `http://10.0.2.2:8787`。**测试完必须把 `mobile/capacitor.config.json` 恢复为实际局域网地址，再同步并重建交付 APK。** `scripts/seed-android-runtime-fixture.js` 只用于该隔离库，文件名刻意不以 `test.js` 结尾，避免被 `node --test` 自动发现。
 
@@ -618,7 +650,7 @@ Windows 没有 WSL 也不能成为不测的理由：可以使用便携 JDK 21、
 
 ### 9.1 状态与渲染
 
-`app.js` 顶部一个 `state` 对象（`me` / `members` / `faultCodes` / `quickFaults` / `organization` / `organizationTree` / `equipment` / `equipmentTypes` / `workOrders` / `selectedWorkOrder` / `expandedNodes`）。没有响应式框架，**改数据后手工调对应的 `loadXxx()` 重渲染**。
+`app.js` 顶部一个 `state` 对象（`me` / `members` / `faultCodes` / `quickFaults` / `meta` / `patrols` / `photos` / `organization` / `organizationTree` / `equipment` / `equipmentTypes` / `workOrders` / `selectedWorkOrder` / `modificationTasks` / `selectedModification` / `modificationDraftItems` / `editingModificationId` / `notifications` / `taskModules` / `expandedNodes` 等）。没有响应式框架，**改数据后手工调对应的 `loadXxx()` 重渲染**。
 
 启动流程：`startSession()` → `GET /api/session/me` → 401 就显示登录闸门；`must_change_password` 就显示改密表单；否则 `applyLevelUi()` + `refreshAll()` + `handleScanLink()`。
 
@@ -648,7 +680,7 @@ Windows 没有 WSL 也不能成为不测的理由：可以使用便携 JDK 21、
 
 两个容易写错的地方：
 
-- **说明栏的必填条件必须和服务端一致**：没选故障码时必填（那句话是技术员到场前唯一的信息来源），选了码就变选填——**省下这一步打字才是给普工减负的意义**。兜底码「其他」是例外，它本身不说明任何问题。逻辑在 `updateFaultTip()`，服务端对应 `resolveReportedFault()` + `faultSymptomText()`。第一版把它写成无条件必填，结果点了快捷按钮还要打字，等于白做——是上一轮的浏览器实测脚本（`browser-fault.js`）把这个问题挡下来的。
+- **说明栏的必填条件必须和服务端一致**：没选故障码时必填（那句话是技术员到场前唯一的信息来源），选了码就变选填——**省下这一步打字才是给普工减负的意义**。兜底码「其他」是例外，它本身不说明任何问题。逻辑在 `updateFaultTip()`，服务端对应 `resolveReportedFault()` + `faultSymptomText()`。第一版把它写成无条件必填，结果点了快捷按钮还要打字，等于白做——是上一轮的浏览器实测把这个问题挡下来的。
 - **快捷按钮要把三级级联一起设好**（`selectFaultCode()`）。只记住一个 id 不行：`fault_code_id` 挂在级联最后那个 `<select>` 的 `name` 上，不设级联的话 `formObject()` 取不到值，而且展开"完整故障分类"会看到和按钮对不上的状态。
 - 要求拍照的故障码，按钮上先标「· 需拍照」——别让普工点完才被拦。
 
@@ -674,7 +706,7 @@ Windows 没有 WSL 也不能成为不测的理由：可以使用便携 JDK 21、
 - **搜索和分级互斥**：`refreshEquipmentPicker()` 里有关键字就忽略车间/产线，事件里也会把那两个下拉清空。否则"搜索 ∩ 产线"经常交出空集，人会以为界面坏了。
 - **选项顺序直接吃 `listEquipment()` 的 `ORDER BY`**（车间 → 产线 → `pos.sequence_no`），前端只顺序遍历切 `<optgroup>`，不再排一遍。选项文本是 `工位序号 · 现场别名 · 设备码`——工人认的是"这条线第几位的那台"，`alias`（台账里 205 台全填了，例如 `1#SPC混料机`）才是车间里真正的叫法，`standard_name` 太笼统（一堆"高速混料机"）。
 
-**踩过的坑：`refreshAll()` 里 `loadOrganization()` 和 `loadEquipment()` 是并发的。** 车间/产线两级来自前者，设备来自后者——只在 `loadEquipment()` 里刷选择器的话，谁先回来不定，车间下拉会时不时只剩一个空选项。**两个 load 函数末尾都要刷一次。** 合成数据下这个竞态很难复现（组织树数据小、总是先到），是拿真实的 205 台设备跑才暴露出来的；`browser-picker.js` 里靠"连续重进页面 4 次"把它逼出来。
+**踩过的坑：`refreshAll()` 里 `loadOrganization()` 和 `loadEquipment()` 是并发的。** 车间/产线两级来自前者，设备来自后者——只在 `loadEquipment()` 里刷选择器的话，谁先回来不定，车间下拉会时不时只剩一个空选项。**两个 load 函数末尾都要刷一次。** 合成数据下这个竞态很难复现（组织树数据小、总是先到），是拿真实的 205 台设备跑才暴露出来的；当时的浏览器实测靠"连续重进页面 4 次"把它逼出来。
 
 ### 9.5 工单详情的阶段模型（技术员的主界面）
 

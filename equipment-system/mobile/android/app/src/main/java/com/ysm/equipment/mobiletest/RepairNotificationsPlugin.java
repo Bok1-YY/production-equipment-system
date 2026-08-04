@@ -79,11 +79,18 @@ public class RepairNotificationsPlugin extends Plugin {
     @PluginMethod
     public void getPendingWorkOrder(PluginCall call) {
         int workOrderId = 0;
+        int modificationTaskId = 0;
+        int notificationId = 0;
         if (getActivity() instanceof MainActivity) {
-            workOrderId = ((MainActivity) getActivity()).consumePendingWorkOrderId();
+            MainActivity activity = (MainActivity) getActivity();
+            workOrderId = activity.consumePendingWorkOrderId();
+            modificationTaskId = activity.consumePendingModificationTaskId();
+            notificationId = activity.consumePendingNotificationId();
         }
         JSObject result = new JSObject();
         result.put("workOrderId", workOrderId);
+        result.put("modificationTaskId", modificationTaskId);
+        result.put("notificationId", notificationId);
         call.resolve(result);
     }
 }

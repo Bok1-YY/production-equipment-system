@@ -7,6 +7,8 @@ import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
     private int pendingWorkOrderId;
+    private int pendingModificationTaskId;
+    private int pendingNotificationId;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -48,6 +50,8 @@ public class MainActivity extends BridgeActivity {
     private void rememberNotificationIntent(Intent intent) {
         if (intent != null) {
             pendingWorkOrderId = intent.getIntExtra(RepairNotificationService.EXTRA_WORK_ORDER_ID, 0);
+            pendingModificationTaskId = intent.getIntExtra(RepairNotificationService.EXTRA_MODIFICATION_TASK_ID, 0);
+            pendingNotificationId = intent.getIntExtra(RepairNotificationService.EXTRA_NOTIFICATION_ID, 0);
         }
     }
 
@@ -55,6 +59,20 @@ public class MainActivity extends BridgeActivity {
         int value = pendingWorkOrderId;
         pendingWorkOrderId = 0;
         if (getIntent() != null) getIntent().removeExtra(RepairNotificationService.EXTRA_WORK_ORDER_ID);
+        return value;
+    }
+
+    synchronized int consumePendingModificationTaskId() {
+        int value = pendingModificationTaskId;
+        pendingModificationTaskId = 0;
+        if (getIntent() != null) getIntent().removeExtra(RepairNotificationService.EXTRA_MODIFICATION_TASK_ID);
+        return value;
+    }
+
+    synchronized int consumePendingNotificationId() {
+        int value = pendingNotificationId;
+        pendingNotificationId = 0;
+        if (getIntent() != null) getIntent().removeExtra(RepairNotificationService.EXTRA_NOTIFICATION_ID);
         return value;
     }
 }

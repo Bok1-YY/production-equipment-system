@@ -43,6 +43,7 @@ const MAX_ATTACHMENTS_PER_TARGET = 6;
 const MAX_ATTACHMENTS_TOTAL_BYTES = MAX_ATTACHMENT_BYTES * MAX_ATTACHMENTS_PER_TARGET;
 const ATTACHMENT_TARGETS = new Set([
   'WORK_ORDER', 'WORK_ORDER_COMPLETION', 'PATROL', 'TASK', 'WORK_ORDER_REVIEW',
+  'MODIFICATION_DOCUMENT', 'MODIFICATION_ITEM',
 ]);
 const TASK_KINDS = new Set(['INSPECTION', 'MAINTENANCE']);
 const TASK_SCHEDULES = new Set(['DAILY', 'WEEKLY', 'INTERVAL', 'FIXED', 'MANUAL']);
@@ -303,6 +304,10 @@ class EquipmentService {
       equipment: scalar('SELECT COUNT(*) AS count FROM equipment WHERE status != ?', 'RETIRED'),
       installedEquipment: scalar('SELECT COUNT(*) AS count FROM equipment_installations WHERE removed_at IS NULL'),
       pendingChanges: scalar('SELECT COUNT(*) AS count FROM composition_changes WHERE status = ?', 'PENDING'),
+      activeModificationTasks: scalar(`SELECT COUNT(*) AS count FROM modification_tasks
+        WHERE status NOT IN ('DRAFT','APPROVED','CANCELLED')`),
+      pendingModificationReviews: scalar(`SELECT COUNT(*) AS count FROM modification_tasks
+        WHERE status='PENDING_REVIEW'`),
       repairingEquipment: scalar(`SELECT COUNT(*) AS count FROM equipment WHERE status IN ('REPORTED', 'REPAIRING')`),
       openWorkOrders: scalar(`SELECT COUNT(*) AS count FROM work_orders WHERE status NOT IN ('COMPLETED', 'CANCELLED')`),
       downtimeWorkOrders: scalar(`SELECT COUNT(*) AS count FROM work_orders WHERE is_downtime = 1 AND status NOT IN ('COMPLETED', 'CANCELLED')`),
@@ -463,7 +468,25 @@ class EquipmentService {
       factories: asObjects(this.db.prepare('SELECT * FROM factories ORDER BY code').all()),
       workshops: asObjects(this.db.prepare('SELECT * FROM workshops ORDER BY code').all()),
       lines: asObjects(this.db.prepare(`
-        SELECT l.*, w.name AS workshop_name
+        SELECT l.*, w.name AS workshop_name,
+          CASE WHEN EXISTS (
+            SELECT 1 FROM modification_task_items mi
+            JOIN modification_tasks mt ON mt.id=mi.task_id
+            WHERE mi.active=1 AND mi.affects_operation=1
+              AND mt.status IN ('IN_PROGRESS','REVISION_REQUESTED','REVISING','PENDING_REVIEW','RETURNED')
+              AND (
+                (mi.target_type='LINE' AND mi.target_id=l.id)
+                OR (mi.target_type='PROCESS' AND mi.target_id IN (SELECT id FROM processes WHERE line_id=l.id))
+                OR (mi.target_type='POSITION' AND mi.target_id IN (
+                  SELECT pos.id FROM positions pos JOIN processes p ON p.id=pos.process_id WHERE p.line_id=l.id
+                ))
+                OR (mi.target_type='EQUIPMENT' AND mi.target_id IN (
+                  SELECT ei.equipment_id FROM equipment_installations ei
+                  JOIN positions pos ON pos.id=ei.position_id JOIN processes p ON p.id=pos.process_id
+                  WHERE ei.removed_at IS NULL AND p.line_id=l.id
+                ))
+              )
+          ) THEN 'ADJUSTING' ELSE l.status END AS operational_status
         FROM production_lines l JOIN workshops w ON w.id = l.workshop_id
         ORDER BY l.code
       `).all()),
@@ -3056,7 +3079,8 @@ class EquipmentService {
   listAttachments(targetType, targetId) {
     if (!ATTACHMENT_TARGETS.has(targetType)) throw new DomainError('不支持的附件对象类型', 400, 'VALIDATION_ERROR');
     return asObjects(this.db.prepare(`
-      SELECT id, target_type, target_id, original_name, mime, size, uploaded_by, created_at
+      SELECT id, target_type, target_id, original_name, mime, size, uploaded_by, created_at,
+             revision_no, sha256, disposition
       FROM attachments WHERE target_type=? AND target_id=? ORDER BY id
     `).all(targetType, Number(targetId)));
   }
@@ -3193,6 +3217,12 @@ class EquipmentService {
       this.getWorkOrder(row.target_id, context);
     }
     else if (row.target_type === 'TASK') this.getScheduledTask(row.target_id, context);
+    else if (row.target_type === 'MODIFICATION_DOCUMENT') this.getModificationTask(row.target_id, context);
+    else if (row.target_type === 'MODIFICATION_ITEM') {
+      const item = this.db.prepare('SELECT task_id FROM modification_task_items WHERE id=?').get(row.target_id);
+      if (!item) throw new DomainError('技改项目不存在', 404, 'NOT_FOUND');
+      this.getModificationTask(item.task_id, context);
+    }
     else if (row.target_type === 'WORK_ORDER_REVIEW') {
       const review = asObject(this.db.prepare('SELECT reviewer_user_id FROM work_order_reviews WHERE id=?').get(row.target_id));
       if (!review) throw new DomainError('评价不存在', 404, 'NOT_FOUND');
@@ -3221,6 +3251,14 @@ class EquipmentService {
       const order = this.getWorkOrder(row.target_id).work_order;
       if (CLOSED_WORK_ORDER_STATUSES.includes(order.status)) {
         throw new DomainError('已结束工单的照片不能删除', 409, 'WORK_ORDER_CLOSED');
+      }
+    }
+    if (row.target_type === 'MODIFICATION_DOCUMENT' || row.target_type === 'MODIFICATION_ITEM') {
+      const taskId = row.target_type === 'MODIFICATION_DOCUMENT' ? row.target_id
+        : this.db.prepare('SELECT task_id FROM modification_task_items WHERE id=?').get(row.target_id)?.task_id;
+      const task = taskId ? this.getModificationTask(taskId, context).task : null;
+      if (!task || !['DRAFT', 'REVISING', 'IN_PROGRESS', 'RETURNED'].includes(task.status)) {
+        throw new DomainError('该阶段的技改附件不能删除', 409, 'TASK_ATTACHMENT_LOCKED');
       }
     }
     this.db.prepare('DELETE FROM attachments WHERE id=?').run(row.id);
@@ -3435,8 +3473,17 @@ class EquipmentService {
     const baseline = MANUAL_EQUIPMENT_STATUSES.includes(equipment.baseline_status)
       ? equipment.baseline_status
       : (MANUAL_EQUIPMENT_STATUSES.includes(equipment.status) ? equipment.status : 'ACTIVE');
+    const modifying = Boolean(this.db.prepare(`
+      SELECT 1 FROM modification_task_items mi
+      JOIN modification_tasks mt ON mt.id=mi.task_id
+      WHERE mi.active=1 AND mi.target_type='EQUIPMENT' AND mi.target_id=?
+        AND mi.affects_operation=1
+        AND mt.status IN ('IN_PROGRESS','REVISION_REQUESTED','REVISING','PENDING_REVIEW','RETURNED')
+      LIMIT 1
+    `).get(Number(equipmentId)));
     let next = baseline;
-    if (openOrders.some((item) => UNDER_REPAIR_WORK_ORDER_STATUSES.includes(item.status))) next = 'REPAIRING';
+    if (modifying) next = 'MODIFYING';
+    else if (openOrders.some((item) => UNDER_REPAIR_WORK_ORDER_STATUSES.includes(item.status))) next = 'REPAIRING';
     else if (openOrders.length) next = 'REPORTED';
 
     // baseline_status 是历史遗留的NULL时补写一次，之后维修期间的手工修改才有地方落。
@@ -3572,5 +3619,8 @@ class EquipmentService {
     throw error;
   }
 }
+
+const { installModificationMethods } = require('./modifications');
+installModificationMethods(EquipmentService);
 
 module.exports = { EquipmentService, ROLES };

@@ -595,7 +595,7 @@ token 本身是稳定映射（存在 `qr_mappings`），换地址只需改环境
 
 ### 6.10 Android 改动必须跑 APK，不以“能打包”为验收
 
-Web 冒烟不能覆盖 Android 权限、Intent、FileProvider、系统相机和 WebView CSP。涉及扫码、拍照、通知、服务器切换或 Capacitor 桥的改动必须完成以下最小闭环：
+适用范围以仓库根 `AGENTS.md` 第 3 节为准：**任何服务端、网页、移动端可执行代码的改动都需要真机验证**（手机 App 是壳，网页和接口的改动同样直接落在手机上）。Web 冒烟不能覆盖 Android 权限、Intent、FileProvider、系统相机和 WebView CSP。本节给出的是真机验收的最小操作闭环——涉及扫码、拍照、通知、服务器切换或 Capacitor 桥时一步都不能少：
 
 1. `cap sync android` 后运行 Android 单元测试、`lintDebug`、`assembleDebug` 和 `assembleDebugAndroidTest`；
 2. 在真实 Android 设备安装 APK，确认冷启动和登录；模拟器只能作为补充，不能代替真机验收；

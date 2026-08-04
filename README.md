@@ -11,9 +11,12 @@
   [![SQLite](https://img.shields.io/badge/SQLite-built--in-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
   [![Android 8+](https://img.shields.io/badge/Android-8%2B-3DDC84?logo=android&logoColor=white)](./equipment-system/mobile)
   [![Zero Framework UI](https://img.shields.io/badge/Web_UI-zero_framework-5b6573.svg)](./equipment-system/web)
+  [![Docker Verified](https://img.shields.io/badge/Docker-ECS_verified-2496ED?logo=docker&logoColor=white)](./Docker服务器升级说明.md)
+  [![Tests](https://img.shields.io/badge/tests-150_pass%20%7C%201_skip-2f6f61.svg)](#测试备份与恢复)
+  [![Real Device](https://img.shields.io/badge/Android_14-real_device_verified-3DDC84?logo=android&logoColor=white)](./手机测试说明.md)
 
-  [在线演示](http://8.136.107.181:8788) ·
-  [Android 测试包](http://8.136.107.181:8788/downloads/ysm-equipment-mobile-test.apk) ·
+  [在线部署](http://8.136.107.181:8788) ·
+  [Android APK](http://8.136.107.181:8788/downloads/ysm-equipment-mobile-test.apk) ·
   [快速开始](#快速开始) ·
   [业务手册](./equipment-system/README.md) ·
   [生产部署](./正式上云Docker部署执行手册.md)
@@ -44,6 +47,19 @@
 - **产线组合可以回到任意历史时点**：安装关系使用时间区间保存，不只记录“现在放在哪里”。
 - **一线操作尽量简单，管理数据仍然完整**：普工扫码后说一句话即可报修，技术员到场后补齐诊断、故障代码和维修方法。
 
+## 2026-08-04 交付进展
+
+| 方向 | 本次结果 |
+|---|---|
+| **现场数据接入** | 完成 205 台设备、57 条产线、205 条在位关系的正式运行库核验；数据库、WAL、附件和备份全部位于 Git/Docker 镜像之外。 |
+| **维修流程收口** | 待试运行阶段只保留试运行结果；维修资料有误可显式返回维修；结单缺项可点击并自动回到对应表单；错误零件支持留痕删除后重填。 |
+| **数据库保护** | 启动器和生产容器在数据库缺失时直接拒绝启动；升级前后均执行 SQLite 一致性备份、附件归档、SHA-256、完整性与外键检查，备份工具不自动删除历史文件。 |
+| **Docker 上云** | GitHub 提交 `aa33b63` 已在 Ubuntu 24.04 / Docker 29.1 / Compose 2.40 的阿里云 ECS 完成镜像构建、隔离预检、回滚演练和单容器切换。 |
+| **Android 交付** | 云端 APK 已构建、v2 验签并开放下载；小米 Android 14 真机完成 USB 覆盖安装、冷启动、页面加载和 instrumentation，结果 `OK (1 test)`。 |
+| **自动化验证** | Node 全量测试 151 项：150 通过、1 项因公开仓库不含现场台账而跳过、0 失败。 |
+
+> 现场数据库、账号密码、附件和签名材料不会进入 GitHub。公开仓库只展示代码、通用模板、部署方法和可复现的验证结果。
+
 ## 核心能力
 
 | 模块 | 能力 |
@@ -59,20 +75,14 @@
 | **Android 现场端** | Capacitor Android 壳支持相机扫码、巡检及维修完成原生相机强制现场拍摄与水印、服务器切换以及厂区 Wi-Fi 内的待接单通知。 |
 | **生产运维** | Docker Compose + Caddy HTTPS、SQLite 一致性备份、附件归档、SHA-256 校验、恢复和上线前检查。 |
 
-## 在线演示
+## 在线部署预览
 
-当前提供一套临时个人验证环境：
+当前阿里云 ECS 提供已部署版本的登录页和 Android 安装包：
 
 - Web：<http://8.136.107.181:8788>
 - Android APK：<http://8.136.107.181:8788/downloads/ysm-equipment-mobile-test.apk>
 
-| 角色 | 工号 | 密码 |
-|---|---|---|
-| 三级管理员 | `admin` | `ysm-demo-2026!` |
-| 二级技术员 | `w002` | `ysm-demo-2026!` |
-| 一级普工 | `w001` | `ysm-demo-2026!` |
-
-> 这是临时公网 HTTP 演示，不用于工厂正式数据，可能因服务器到期、重启或数据重置而停止。请勿在演示环境输入真实人员、设备、照片或密码。
+> 该地址连接授权验证环境，不是开放试玩账号。GitHub 不公开任何有效工号或密码。当前入口仍是公网 HTTP，仅用于阶段验收；正式推广前必须绑定稳定域名、启用 HTTPS 并重新生成正式签名 Android 包。未经授权请勿尝试登录、上传数据或扫描现场二维码。
 
 用户已确认 `equipment-system/demo-data/equipment-demo.db` 实际是工厂在用的 205 台设备源库，并非可随意重置的演示库。为避免 Git 拉取覆盖运行数据，Windows 日常服务不直接写这个被版本控制跟踪的文件，而是固定使用不入 Git 的 `equipment-system/factory-data/equipment.db` 运行副本；首次切换已经在停服、双库备份和完整性校验后完成。任何再次恢复或路径切换仍必须先做一致性备份并由用户明确确认。
 

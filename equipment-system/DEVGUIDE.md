@@ -711,10 +711,12 @@ Windows 没有 WSL 也不能成为不测的理由：可以使用便携 JDK 21、
 
 ## 十、部署与运维
 
-- **systemd 用户服务** `~/.config/systemd/user/ysm-equipment-system.service`，`WorkingDirectory` 指向本目录，日志追加到 `data/server.log`，`Restart=on-failure`。
-- **改完代码必须重启服务**（`systemctl --user restart ysm-equipment-system.service`，或双击停止再启动），前端改动只需浏览器刷新。
-- **备份**：Windows 工厂环境对 `factory-data/equipment.db` 执行 `scripts/backup-production.js`，得到一致数据库、附件归档和 SHA-256 清单；用 `scripts/verify-backup.js` 校验。不要在线直接复制主库，恢复前必须停 App，并定期用 `scripts/restore-production.js` 做隔离演练。
-- **上 HTTPS 反代之后**：设 `YSM_SECURE_COOKIE=1`，并把 `PUBLIC_BASE_URL` 改成正式域名。
+- **Windows 工厂环境**：日常启动写 `factory-data/equipment.db`，服务由 `start-full-windows.ps1` 创建独立后台进程；改完代码需要用 `stop-windows.bat` 精确停止后再启动。前端文件虽然没有构建步骤，也必须确认实际服务已加载新代码。
+- **阿里云当前部署**：2026-08-04 已把 `/home/ecs-user/ysm-app` 的旧 systemd 服务切换为 Docker。发布源码位于 `/home/ecs-user/ysm-releases/aa33b63/equipment-system`，服务器专用 Compose 配置位于 `/home/ecs-user/ysm-deployment`，正式数据与备份分别位于 `/home/ecs-user/ysm-data`、`/home/ecs-user/ysm-server-backups`。旧 `ysm-equipment-cloud-test.service` 保留作回滚依据，但必须保持 `disabled/inactive`，禁止与 Docker 同时写 SQLite。
+- **容器约束**：当前只运行 `ysm-equipment-system-app-1`，镜像为 `ysm-equipment-system:aa33b63`，重启策略为 `unless-stopped`；`/home/ecs-user/ysm-data -> /data` 可写，APK 下载目录只读挂载到 `/app/web/downloads`。升级必须先在独立数据库副本启动并执行 `inspect-database.js`，再停旧写进程、生成最终一致性备份、确认无打开句柄后切换。
+- **备份**：Windows 和 Docker 环境都使用 `scripts/backup-production.js`，得到一致数据库、`attachments.tar.gz` 与 SHA-256 清单，再用 `scripts/verify-backup.js` 或只读检查脚本验证。不要在线直接复制主库；恢复前必须停 App。备份程序没有自动清理入口，历史备份不得因部署或空间整理被顺手删除。
+- **镜像网络**：本次 ECS 访问 Docker Hub 超时，实际构建对 Dockerfile 输入临时改用国内可访问的镜像前缀，并记录基础镜像摘要；没有修改仓库源码。后续重复构建优先配置阿里云账号自己的 ACR 加速或制品订阅，并继续使用明确版本标签和摘要，不依赖 `latest`。
+- **公网边界**：当前 `http://8.136.107.181:8788` 只用于阶段验收。正式推广必须启用 Caddy/HTTPS，把 `PUBLIC_BASE_URL` 与 `YSM_TRUSTED_ORIGIN` 设为同一正式域名，启用 `YSM_SECURE_COOKIE=1`，重新生成正式签名 Android 包后再印二维码。
 
 ---
 

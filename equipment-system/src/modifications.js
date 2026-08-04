@@ -293,6 +293,12 @@ function replaceItems(service, task, inputs) {
   const existing = new Map(service.db.prepare(
     'SELECT * FROM modification_task_items WHERE task_id=? AND active=1'
   ).all(task.id).map((row) => [Number(row.id), row]));
+  // UNIQUE(task_id,sequence_no)/(task_id,client_ref) 对 active=0 的历史行同样生效。
+  // 先把本任务全部行的两个唯一键挪进负区/置空：保留项在下面写回终值，被移除的行
+  // 永久让出序号和引用——否则交换两项顺序、或删一项后复用其序号/引用都会撞约束。
+  service.db.prepare(
+    'UPDATE modification_task_items SET sequence_no=-(1000000+id), client_ref=NULL WHERE task_id=?'
+  ).run(task.id);
   const kept = new Set();
   const insert = service.db.prepare(`
     INSERT INTO modification_task_items(
@@ -872,12 +878,16 @@ function installModificationMethods(EquipmentService) {
     if (!item) throw new DomainError('变更项目不存在', 404, 'NOT_FOUND');
     const photos = Array.isArray(input.attachments) ? input.attachments : [];
     if (!photos.length) throw new DomainError('没有收到完工照片', 400, 'VALIDATION_ERROR');
-    const written = this.storeAttachments('MODIFICATION_ITEM', item.id, photos, context);
-    for (const file of written) {
-      this.db.prepare('UPDATE attachments SET revision_no=? WHERE id=?').run(task.revision_no, file.id);
-    }
-    history(this, task, 'ITEM_PHOTO_ADDED', context, task.status, task.status,
-      `为“${item.title}”上传${photos.length}张完工照片`, { item_id: item.id });
+    // storeAttachments 的契约是调用方负责事务：任何一张失败要连同已写库的记录一起回滚，
+    // 不能只靠它的 unlink 清文件、留下指向不存在文件的附件行；revision_no 也要同批落库。
+    transaction(this.db, () => {
+      const written = this.storeAttachments('MODIFICATION_ITEM', item.id, photos, context);
+      for (const file of written) {
+        this.db.prepare('UPDATE attachments SET revision_no=? WHERE id=?').run(task.revision_no, file.id);
+      }
+      history(this, task, 'ITEM_PHOTO_ADDED', context, task.status, task.status,
+        `为“${item.title}”上传${photos.length}张完工照片`, { item_id: item.id });
+    });
     return itemFiles(this, item);
   };
 

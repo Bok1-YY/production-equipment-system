@@ -60,7 +60,7 @@ npm run dev          # node --watch，改完自动重启
 ### 0.5 跑测试
 
 ```bash
-npm test                                   # node --test，当前 156 项（155 通过，1 项缺现场真实台账时跳过）
+npm test                                   # node --test，当前 158 项（157 通过，1 项缺现场真实台账时跳过）
 node scripts/http-smoke.js                 # HTTP 冒烟（需服务在跑）
 SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码后
 ```
@@ -135,7 +135,7 @@ equipment-system/
 ├── web/scanner-utils.js 扫码解析工具（供 app.js 与测试共用）
 ├── web/styles.css       设计令牌（:root 变量）+ 组件样式 + 760px 移动端断点
 │
-│  ── 测试（node --test，156 项）──
+│  ── 测试（node --test，158 项）──
 ├── test/domain.test.js            编码格式与状态机（纯函数）
 ├── test/service.test.js           台账/编码/组合/导入/结构删除/工单/层级字段（12 项）
 ├── test/auth.test.js              密码/会话/三级/成员管理/工单可见性（11 项）
@@ -156,7 +156,7 @@ equipment-system/
 ├── test/mobile-scanner.test.js    扫码解析工具（scanner-utils）
 ├── test/operational-report.test.js 运营报表聚合与下钻
 ├── test/work-order-repair-redesign.test.js 维修阶段重构：核对/开工/试运行边界
-├── test/modification-tasks.test.js 技改任务：全员确认、修订、审核事务与整单回滚（4 项）
+├── test/modification-tasks.test.js 技改任务：全员确认、修订、审核事务与整单回滚（6 项）
 ├── test/modification-http.test.js  技改 HTTP 闭环：文件上传、通知、留证与审核应用（1 项）
 │
 │  ── 脚本 ──

@@ -12,7 +12,7 @@
   [![Android 8+](https://img.shields.io/badge/Android-8%2B-3DDC84?logo=android&logoColor=white)](./equipment-system/mobile)
   [![Zero Framework UI](https://img.shields.io/badge/Web_UI-zero_framework-5b6573.svg)](./equipment-system/web)
   [![Docker Verified](https://img.shields.io/badge/Docker-ECS_verified-2496ED?logo=docker&logoColor=white)](./Docker服务器升级说明.md)
-  [![Tests](https://img.shields.io/badge/tests-155_pass%20%7C%201_skip-2f6f61.svg)](#测试备份与恢复)
+  [![Tests](https://img.shields.io/badge/tests-157_pass%20%7C%201_skip-2f6f61.svg)](#测试备份与恢复)
   [![Real Device](https://img.shields.io/badge/Android_14-real_device_verified-3DDC84?logo=android&logoColor=white)](./手机测试说明.md)
 
   [在线部署](http://8.136.107.181:8788) ·
@@ -59,7 +59,7 @@
 | **数据库保护** | 启动器和生产容器在数据库缺失时直接拒绝启动；升级前后均执行 SQLite 一致性备份、附件归档、SHA-256、完整性与外键检查，备份工具不自动删除历史文件。 |
 | **Docker 上云** | GitHub 提交 `aa33b63` 已在 Ubuntu 24.04 / Docker 29.1 / Compose 2.40 的阿里云 ECS 完成镜像构建、隔离预检、回滚演练和单容器切换。 |
 | **Android 交付** | 云端 APK 已构建、v2 验签并开放下载；小米 Android 14 真机完成 USB 覆盖安装、冷启动、页面加载和 instrumentation，结果 `OK (1 test)`。 |
-| **自动化验证** | Node 全量测试 156 项：155 通过、1 项因公开仓库不含现场台账而跳过、0 失败；205 台正式结构库在独立一致性副本上完成迁移 v4，数量不变、完整性正常、外键错误 0。 |
+| **自动化验证** | Node 全量测试 158 项：157 通过、1 项因公开仓库不含现场台账而跳过、0 失败；205 台正式结构库在独立一致性副本上完成迁移 v4，数量不变、完整性正常、外键错误 0。 |
 
 > 现场数据库、账号密码、附件和签名材料不会进入 GitHub。公开仓库只展示代码、通用模板、部署方法和可复现的验证结果。
 
@@ -321,7 +321,7 @@ npm run backup -- /backups
 node scripts/verify-backup.js /backups/<备份目录>
 ```
 
-当前 156 项测试覆盖设备编码、技改任务与组合变动、身份权限、照片魔数、扫码解析、维修状态机、Docker 缺库拒启、待试运行禁止越级修改维修资料、错误零件删除、核对报修信息、结构化试运行、评价照片可见性、巡检问题照片与维修完成照片双重强制、运营报表下钻、点检保养、Excel 导入、登录锁定、幂等和安全响应边界。Android 相关改动还必须在真实手机上完成安装、冷启动、登录、首页数据加载以及对应硬件流程和 instrumentation 验证，不能用模拟器或“APK 构建成功”替代。
+当前 158 项测试覆盖设备编码、技改任务与组合变动、身份权限、照片魔数、扫码解析、维修状态机、Docker 缺库拒启、待试运行禁止越级修改维修资料、错误零件删除、核对报修信息、结构化试运行、评价照片可见性、巡检问题照片与维修完成照片双重强制、运营报表下钻、点检保养、Excel 导入、登录锁定、幂等和安全响应边界。Android 相关改动还必须在真实手机上完成安装、冷启动、登录、首页数据加载以及对应硬件流程和 instrumentation 验证，不能用模拟器或“APK 构建成功”替代。
 
 生产备份使用 SQLite `VACUUM INTO` 创建一致数据库，并归档附件和生成 SHA-256 清单。不要在服务运行时只复制 `equipment.db`，因为 WAL 中可能仍有未检查点的数据。
 

@@ -87,7 +87,7 @@ const labels = {
   INSTALL: '安装', MOVE: '移动', REMOVE: '拆除', REPLACE: '替换',
   PENDING: '待确认', APPROVED: '已确认', REJECTED: '已驳回',
   DRAFT: '草稿', PUBLISHED: '待接收', REVISION_REQUESTED: '待修订', REVISING: '方案修订中',
-  RETURNED: '退回整改', RETROFIT: '设备改造', CREATE: '新增', UPDATE: '资料调整',
+  RETURNED: '退回整改', RETROFIT: '设备改造',
   REPARENT: '调整所属', STATUS: '启停调整', DELETE: '删除',
   EQUIPMENT: '设备', WORKSHOP: '车间', LINE: '产线', PROCESS: '工序', POSITION: '机位',
   NORMAL: '一般', URGENT: '紧急', CRITICAL: '特急',
@@ -2143,11 +2143,18 @@ function modificationEquipmentOptions(selected) {
   return `<option value="">请选择</option>${state.equipment.map((item) => `<option value="${item.id}" ${Number(selected) === item.id ? 'selected' : ''}>${escapeHtml(item.code)} · ${escapeHtml(item.standard_name)}</option>`).join('')}`;
 }
 
+// 技改项目的 CREATE/UPDATE 与设备履历事件的 CREATE(建档)/UPDATE(修改档案) 同名不同义，
+// 不能共用 labels（对象字面量后键覆盖前键，上一版就是这么显示错的）。
+const modificationActionLabels = { CREATE: '新增', UPDATE: '资料调整' };
+function modificationActionLabel(action) {
+  return modificationActionLabels[action] || labels[action] || action;
+}
+
 function modificationActionOptions(type, selected) {
   const actions = type === 'EQUIPMENT'
     ? ['INSTALL', 'MOVE', 'REMOVE', 'REPLACE', 'RETROFIT']
     : ['CREATE', 'UPDATE', 'REPARENT', 'STATUS', 'DELETE'];
-  return actions.map((action) => `<option value="${action}" ${selected === action ? 'selected' : ''}>${escapeHtml(labels[action] || action)}</option>`).join('');
+  return actions.map((action) => `<option value="${action}" ${selected === action ? 'selected' : ''}>${escapeHtml(modificationActionLabel(action))}</option>`).join('');
 }
 
 function modificationPayloadFields(item, index) {
@@ -2261,8 +2268,12 @@ function editModification(detail) {
   }));
   const form = document.querySelector('#modification-form');
   for (const key of ['title', 'objective', 'acceptance_criteria', 'priority']) form.elements[key].value = task[key] || '';
-  form.elements.planned_start_at.value = new Date(task.planned_start_at).toISOString().slice(0, 16);
-  form.elements.due_at.value = new Date(task.due_at).toISOString().slice(0, 16);
+  // datetime-local 要的是本地墙钟时间：直接 toISOString() 会填成 UTC，
+  // 东八区下每编辑保存一轮，计划时间就静默前移 8 小时。
+  const localInput = (iso) => new Date(new Date(iso).getTime() - new Date().getTimezoneOffset() * 60000)
+    .toISOString().slice(0, 16);
+  form.elements.planned_start_at.value = localInput(task.planned_start_at);
+  form.elements.due_at.value = localInput(task.due_at);
   renderModificationAssignees(); form.elements.primary_assignee_user_id.value = String(task.primary_assignee_user_id);
   const collaboratorIds = new Set(detail.members.filter((m) => m.member_role === 'COLLABORATOR').map((m) => Number(m.user_id)));
   [...document.querySelector('#modification-collaborators').options].forEach((option) => { option.selected = collaboratorIds.has(Number(option.value)); });
@@ -2297,7 +2308,7 @@ async function openModification(id) {
     <section class="detail-block"><h3>目的与验收标准</h3><p>${escapeHtml(task.objective)}</p><p><strong>验收：</strong>${escapeHtml(task.acceptance_criteria)}</p></section>
     <section class="detail-block"><h3>执行人员</h3><div class="stack-meta">${members.map((member) => `<span>${escapeHtml(member.display_name)} · ${member.member_role === 'PRIMARY' ? '主负责人' : '协作'} · ${member.acknowledged_revision === task.revision_no ? '已确认本版' : '待确认'}</span>`).join('')}</div></section>
     <section class="detail-block"><h3>技术文件和图纸</h3>${documents.length ? documents.map((file) => `<p><a href="/api/attachments/${file.id}/file" target="_blank" rel="noopener">${escapeHtml(file.original_name)}</a> <small>第${file.revision_no || 1}版 · ${(file.size / 1024 / 1024).toFixed(1)}MB</small></p>`).join('') : '<p class="empty">尚未上传</p>'}</section>
-    <section class="detail-block"><h3>变更项目</h3>${items.map((item, index) => `<article class="modification-result" data-mod-item-id="${item.id}"><div class="stack-title"><strong>${index + 1}. ${escapeHtml(item.title)}</strong><span class="status">${escapeHtml(labels[item.target_type])} · ${escapeHtml(labels[item.action] || item.action)}</span>${item.affects_operation ? '<span class="status pending">影响生产</span>' : ''}</div><p>${escapeHtml(item.instructions)}</p>
+    <section class="detail-block"><h3>变更项目</h3>${items.map((item, index) => `<article class="modification-result" data-mod-item-id="${item.id}"><div class="stack-title"><strong>${index + 1}. ${escapeHtml(item.title)}</strong><span class="status">${escapeHtml(labels[item.target_type])} · ${escapeHtml(modificationActionLabel(item.action))}</span>${item.affects_operation ? '<span class="status pending">影响生产</span>' : ''}</div><p>${escapeHtml(item.instructions)}</p>
       ${['IN_PROGRESS', 'RETURNED'].includes(task.status) && level() === LEVELS.TECHNICIAN ? `<label>实际执行结果*<textarea data-mod-result rows="3">${escapeHtml(item.execution_result || '')}</textarea></label><button class="secondary small" data-save-mod-result>保存本项结果</button><label class="button-link file-button small">现场拍照<input type="file" accept="image/*" capture="environment" multiple data-mod-photo></label>` : item.execution_result ? `<p><strong>实际结果：</strong>${escapeHtml(item.execution_result)}</p>` : '<p class="hint">尚未填写结果</p>'}
       ${item.attachments?.length ? `<div class="photo-grid readonly">${item.attachments.map((photo) => `<figure class="photo-thumb"><img src="/api/attachments/${photo.id}/file" alt="${escapeHtml(photo.original_name || '完工照片')}" loading="lazy"></figure>`).join('')}</div>` : item.photo_required ? '<p class="hint">本项必须上传完工照片</p>' : `<p class="hint">免拍：${escapeHtml(item.photo_exemption_reason || '')}</p>`}</article>`).join('')}</section>
     ${task.completion_summary ? `<section class="detail-block"><h3>施工总结</h3><p>${escapeHtml(task.completion_summary)}</p>${task.outstanding_issues ? `<p><strong>遗留问题：</strong>${escapeHtml(task.outstanding_issues)}</p>` : ''}</section>` : ''}

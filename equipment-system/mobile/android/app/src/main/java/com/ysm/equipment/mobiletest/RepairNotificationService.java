@@ -238,6 +238,17 @@ public class RepairNotificationService extends Service {
         for (int oldId : visibleRepairIds) {
             if (!current.contains(oldId)) notifications.cancel(repairNotificationId(oldId));
         }
+        // 服务进程被杀重启后 visibleRepairIds 是空的，上面的差集清不掉重启前挂出的
+        // 陈旧维修通知（期间已被他人接单的会一直留在通知栏），按 ID 区间兜底清扫。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            for (StatusBarNotification active : notifications.getActiveNotifications()) {
+                int id = active.getId();
+                if (id >= REPAIR_NOTIFICATION_BASE && id < TASK_NOTIFICATION_BASE
+                        && !current.contains(id - REPAIR_NOTIFICATION_BASE)) {
+                    notifications.cancel(id);
+                }
+            }
+        }
         visibleRepairIds.clear();
         visibleRepairIds.addAll(current);
         if (count > 0) notifications.notify(REPAIR_SUMMARY_ID, repairSummaryNotification(count));

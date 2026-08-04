@@ -19,6 +19,8 @@ equipment-system/data/*.pid
 equipment-system/data/.firewall-*-ready
 # 现场照片：真实生产数据，和数据库一样靠文件系统备份，不进版本控制
 equipment-system/data/attachments/
+# 工厂日常运行库与配套附件。源快照可能来自仓库，但运行副本绝不进入 Git。
+equipment-system/factory-data/
 
 # ── 原始业务资料（可能包含真实设备与内部需求信息）──
 /*.pdf

@@ -48,7 +48,9 @@ const TASK_KINDS = new Set(['INSPECTION', 'MAINTENANCE']);
 const TASK_SCHEDULES = new Set(['DAILY', 'WEEKLY', 'INTERVAL', 'FIXED', 'MANUAL']);
 const TASK_TARGETS = new Set(['PROCESS', 'EQUIPMENT']);
 const TRIAL_RESULT_BY_VALUE = new Map(TRIAL_RESULTS.map((item) => [item.value, item]));
-const REPAIR_RECORD_STATUSES = new Set(['IN_PROGRESS', 'WAITING_PARTS', 'OUTSOURCED', 'TRIAL_RUN', 'PENDING_REVIEW']);
+// 维修资料只能在“维修中”及其等待分支编辑。进入待试运行以后流程已经向前推进，
+// 不能一边试运行一边悄悄改诊断、零件或完成照片；确实填错就显式返回维修。
+const REPAIR_RECORD_STATUSES = new Set(['IN_PROGRESS', 'WAITING_PARTS', 'OUTSOURCED']);
 
 // 只认魔数，不信前端声明的 mime —— 否则改个扩展名就能往服务器上传任意文件。
 const IMAGE_SIGNATURES = [
@@ -1954,6 +1956,9 @@ class EquipmentService {
       throw new DomainError(`已结束工单不能${action}`, 409);
     }
     if (!REPAIR_RECORD_STATUSES.has(current.status)) {
+      if (['TRIAL_RUN', 'PENDING_REVIEW'].includes(current.status)) {
+        throw new DomainError(`请先返回「维修中」再${action}`, 409, 'RETURN_TO_REPAIR_REQUIRED');
+      }
       throw new DomainError(`要先开始维修才能${action}`, 409, 'REPAIR_NOT_STARTED');
     }
     this.assertOwnWorkOrder(current, context, action);
@@ -2211,6 +2216,23 @@ class EquipmentService {
     this.history(current.id, 'PART_ADDED', current.status, current.status, context.actor, null, part);
     this.audit('work_order_part', part.id, 'CREATE', context, null, part);
     return part;
+  }
+
+  deleteWorkOrderPart(id, partId, context) {
+    assertRole(context.role, [ROLES.TECHNICIAN, ROLES.ADMIN]);
+    const current = this.getWorkOrder(id).work_order;
+    this.assertRepairStarted(current, context, '删除错误的零件记录');
+    const part = asObject(this.db.prepare(`
+      SELECT * FROM work_order_parts WHERE id=? AND work_order_id=?
+    `).get(positiveId(partId, '零件记录'), current.id));
+    if (!part) throw new DomainError('零件记录不存在', 404, 'NOT_FOUND');
+    return transaction(this.db, () => {
+      this.db.prepare('DELETE FROM work_order_parts WHERE id=?').run(part.id);
+      this.history(current.id, 'PART_REMOVED', current.status, current.status, context.actor,
+        `删除错误零件记录：${part.part_name}`, part);
+      this.audit('work_order_part', part.id, 'DELETE', context, part, null);
+      return this.getWorkOrder(current.id);
+    });
   }
 
   // ---- 撤回 / 评价 / 重新报修 ----

@@ -706,6 +706,9 @@ async function handleApi(request, response, url) {
       () => service.addWorkOrderPart(params[0], body, context));
     return success(response, created, 201);
   }
+  if (method === 'DELETE' && (params = match(pathname, /^\/api\/work-orders\/(\d+)\/parts\/(\d+)$/))) {
+    return success(response, service.deleteWorkOrderPart(params[0], params[1], context));
+  }
 
   if (method === 'GET' && pathname === '/api/audit-logs') {
     return success(response, service.auditLogs(url.searchParams.get('limit'), context));

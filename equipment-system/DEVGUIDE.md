@@ -10,7 +10,11 @@
 
 ### 0.1 一键启动（日常用法）
 
-Windows 只保留一个用户入口：桌面的 `一键启动全功能设备系统.bat`。它统一启动电脑页面、手机局域网访问、扫码、巡检拍照和报修通知所需的后端。`scripts/start-full-windows.ps1` 以独立后台进程启动 Node，轮询 `/api/health` 成功后才打开网页，并把实际 Node PID 与启动时间写入 `data/equipment-server.pid`，输出和错误日志写入 `data/server-*.log`。因此关闭启动窗口不会停服；`stop-windows.bat` 会双重校验 PID 后停止对应进程。非管理员启动不会再同步等待防火墙 UAC，保证本机页面优先可用；手机被防火墙拦截时再单独配置 TCP 8787 私有网络入站规则。
+Windows 只保留一个用户入口：桌面的 `一键启动全功能设备系统.bat`。它统一启动电脑页面、手机局域网访问、扫码、巡检拍照和报修通知所需的后端，并显式设置 `YSM_DB_PATH=factory-data/equipment.db`。数据库不存在时启动器必须失败，禁止 SQLite 静默生成空库。`scripts/start-full-windows.ps1` 以独立后台进程启动 Node，轮询 `/api/health` 成功后才打开网页，并把实际 Node PID 与启动时间写入 `data/equipment-server.pid`，输出和错误日志写入 `data/server-*.log`。因此关闭启动窗口不会停服；`stop-windows.bat` 会双重校验 PID 后停止对应进程。非管理员启动不会再同步等待防火墙 UAC，保证本机页面优先可用；手机被防火墙拦截时再单独配置 TCP 8787 私有网络入站规则。
+
+启动器在启动后端前调用 `scripts/prepare-mobile-apk-windows.ps1`。它按当前 Wi-Fi 地址和移动端源码指纹检查 `web/downloads/ysm-equipment-mobile-test.apk`；缺失、源码变化或地址变化时才下载/复用便携 JDK 21、Android SDK 和 Gradle 缓存，执行 Capacitor 同步、Gradle 构建、APK 验签并写入下载目录。构建过程会暂时改写当前地址和 Android 生成配置，但使用字节快照在成功或失败后原样恢复，不能因此把仓库弄脏。检测到 Windows 本地代理时，Java 继承代理并优先使用可直连的 Maven 镜像，Gradle 下载失败会自动重试。安装页与 APK 均可用后才继续启动服务；BAT 窗口会保留安装地址，手动关闭窗口不影响后台服务。
+
+用户已确认 `demo-data/equipment-demo.db` 实际是 205 台设备的工厂源库。由于该文件被 Git 跟踪，不能直接承载日常写入；2026-08-04 在停服、源库与旧空库分别一致性备份并校验后，以 `VACUUM INTO` 生成 `factory-data/equipment.db` 运行副本，并恢复配套附件。日常启动只写 `factory-data/`，`demo-data/` 源文件和 `data/equipment.db` 旧空库均保留。排查“数据不见”时必须只读核对进程实际路径、三个数据库及 WAL/SHM；任何恢复或路径切换都按仓库根目录 `AGENTS.md` 执行。
 
 Linux 桌面环境可以从项目目录运行 `一键启动设备系统.sh`。它会：
 
@@ -48,14 +52,14 @@ npm run dev          # node --watch，改完自动重启
 |---|---|---|
 | `PORT` | `8787` | 监听端口 |
 | `HOST` | `127.0.0.1` | **只监听本机**。手机/别的电脑要访问必须改成 `0.0.0.0`，见 §十二 |
-| `YSM_DB_PATH` | `data/equipment.db` | 数据库位置；测试里传 `:memory:` |
+| `YSM_DB_PATH` | `data/equipment.db` | 手动启动默认值；Windows 一键启动固定覆盖为 `factory-data/equipment.db`，自动测试必须使用 `%TEMP%` 独立库 |
 | `PUBLIC_BASE_URL` | 由请求头推导 | **决定铭牌二维码里存的地址**。正式域名定下来之前不要批量打印铭牌 |
 | `YSM_SECURE_COOKIE` | 未设 | 设为 `1` 时会话 Cookie 加 `Secure`，上了 HTTPS 反代必须设 |
 
 ### 0.5 跑测试
 
 ```bash
-npm test                                   # node --test，当前 149 项（148 通过，1 项缺现场真实台账时跳过）
+npm test                                   # node --test，当前 150 项（149 通过，1 项缺现场真实台账时跳过）
 node scripts/http-smoke.js                 # HTTP 冒烟（需服务在跑）
 SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码后
 ```
@@ -93,7 +97,7 @@ SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码
 ┌───────────────────────────────────────────────────────┐
 │  src/db.js  node:sqlite（Node 22.5+ 内置）              │
 │    openDatabase() = 建库 + migrate + 种子 + 种管理员    │
-│    34 张表，WAL 模式，单文件 data/equipment.db          │
+│    34 张表，WAL 模式；Windows 运行库 factory-data/equipment.db │
 └───────────────────────────────────────────────────────┘
 ```
 
@@ -127,7 +131,7 @@ equipment-system/
 ├── web/app.js           ★ 全部前端逻辑（无框架、无模块化、按顺序执行）
 ├── web/styles.css       设计令牌（:root 变量）+ 组件样式 + 760px 移动端断点
 │
-│  ── 测试（node --test，149 项）──
+│  ── 测试（node --test，150 项）──
 ├── test/domain.test.js            编码格式与状态机（纯函数）
 ├── test/service.test.js           台账/编码/组合/导入/结构删除/工单/层级字段（12 项）
 ├── test/auth.test.js              密码/会话/三级/成员管理/工单可见性（11 项）
@@ -151,8 +155,9 @@ equipment-system/
 ├── scripts/build-ledger-composition.js      从原始台账推导组合表
 ├── scripts/generate-equipment-naming-workbook.js  生成命名建议工作簿
 │
-├── data/equipment.db    ★ 唯一数据文件（含 -wal/-shm）
-├── data/attachments/    现场照片（按年月分目录，随机文件名）
+├── factory-data/equipment.db  ★ Windows 日常运行库（含 -wal/-shm，不入 Git）
+├── factory-data/attachments/  工厂运行库配套附件（不入 Git）
+├── data/equipment.db           切换前旧空库，只保留不覆盖
 ├── data/equipment-before-*.db   改动前的手工备份（见 §六.6）
 ├── data/server.log      运行日志（systemd 追加写）
 ├── 一键启动设备系统.sh / 停止设备系统.sh
@@ -165,7 +170,7 @@ equipment-system/
 
 **版本控制的仓库根在上一级**，不是本目录。公开远程为 `Bok1-YY/production-equipment-system`，默认分支是 `main`。
 
-**代码归 git，数据归备份，两者不重叠**：`equipment.db`（含密码哈希与真实台账）、`equipment-before-*.db` 备份、`node_modules/` 和日志全部被 `.gitignore` 排除。所以 `git checkout` 回退代码**不会**回退数据，改数据结构前仍然必须手工备份数据库（见 §六.6）。
+**代码归 git，运行数据归备份，两者不重叠**：`factory-data/`（含密码哈希、真实台账和附件）、`data/*.db` 备份、`node_modules/` 和日志被 `.gitignore` 排除。历史源库 `demo-data/equipment-demo.db` 已被 Git 跟踪，所以绝不能直接作为持续写入的运行文件；拉取代码也不得替换 `factory-data/`。改数据结构前仍然必须一致性备份（见 §六.6）。
 
 ---
 
@@ -248,13 +253,14 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
 |---|---|---|
 | `classifyWorkOrder` | 核对报修信息 / 确认故障分类 | 技术员仅 `ARRIVED`；管理员可在 `SUBMITTED` / `ACCEPTED` 提前纠错 |
 | `correctWorkOrderEquipment` | 报修信息有误，更改设备？ | 同上 |
-| `updateRepairDetail` | 诊断原因与维修方法 | `IN_PROGRESS` / `WAITING_PARTS` / `OUTSOURCED` / `TRIAL_RUN` / 历史 `PENDING_REVIEW` |
-| `addWorkOrderPart` | 使用零件 | 同上 |
+| `updateRepairDetail` | 诊断原因与维修方法 | 仅 `IN_PROGRESS` / `WAITING_PARTS` / `OUTSOURCED` |
+| `addWorkOrderPart` / `deleteWorkOrderPart` | 新增零件 / 删除错误零件记录后重填 | 同上 |
+| `addWorkOrderCompletionAttachments` | 巡检工单的维修完成照片 | 同上 |
 | `updateTrialResult` | 试运行结果 | 仅 `TRIAL_RUN` |
 
 故障设备和分类统一走 `assertReportInfoStage()`。维修开始后若发现信息不对，不能直接在维修记录旁边修改，必须先沿状态机回到 `ARRIVED`；`IN_PROGRESS` / `WAITING_PARTS` / `OUTSOURCED` 都允许回退。这样界面隐藏不是唯一约束，直接调接口也跨不过去。开始维修时服务端还会再次检查 `final_equipment_id` 和 `fault_code_id`，两项未确认就拒绝进入 `IN_PROGRESS`。
 
-维修记录和零件走 `assertRepairStarted()`，到场但尚未开工时不能提前填写。`assertArrived()` 仍供工单照片等“到场后但不要求开工”的通用操作使用。
+维修记录、零件和维修完成照片走 `assertRepairStarted()`：到场但尚未开工时不能提前填写，进入 `TRIAL_RUN` 或历史 `PENDING_REVIEW` 后也不能越级修改，接口返回 `RETURN_TO_REPAIR_REQUIRED`。资料有误必须沿状态机回到 `IN_PROGRESS`；零件填错通过 `DELETE /api/work-orders/:id/parts/:partId` 删除并留下 `PART_REMOVED` 历史和审计，再重新填写。`assertArrived()` 仍供普通工单照片等“到场后但不要求开工”的通用操作使用。
 
 `WORK_ORDER_STAGES` 是有序阶段表，由 `/api/meta` 下发给界面画步骤条。等零件/外协/待审核是分支，用 `includes` 并到所属阶段，不占独立步骤。**前端不许再抄一份**——抄了就会和状态机走散（§3.4 那条已经踩过一次）。
 - **权限**：`CANCELLED` 要求管理员；其余（含 `COMPLETED`）技术员即可。结单权限 2026-07-26 从管理员下放给技术员，验收改由报修人的评价承担。
@@ -496,7 +502,7 @@ node --check web/app.js       # 语法
 **git 保护的是代码，不是数据**——`data/*.db` 全部被 `.gitignore` 排除，回退代码不会回退数据。生产环境使用一致性备份脚本，不直接复制正在写入的 WAL 数据库：
 
 ```bash
-YSM_DB_PATH=/data/equipment.db node scripts/backup-production.js /backups
+YSM_DB_PATH=factory-data/equipment.db node scripts/backup-production.js /backups
 node scripts/verify-backup.js /backups/ysm-backup-时间戳
 ```
 
@@ -575,7 +581,7 @@ Windows 没有 WSL 也不能成为不测的理由：可以使用便携 JDK 21、
 
 **加一个功能**（典型全链路）：
 
-1. 有数据结构变化 → 先 `cp data/equipment.db data/equipment-before-xxx-YYYYMMDD.db`，再在 `db.js` 的 `migrate()` 里用 `ensureColumn` 加列。
+1. 有数据结构变化 → 停止服务，对 `factory-data/equipment.db` 执行 `backup-production.js` 并用 `verify-backup.js` 校验，再在 `db.js` 的 `migrate()` 里用 `ensureColumn` 加列。
 2. 纯校验/常量/状态机 → `domain.js`（保持无 IO、可单测）。
 3. 业务逻辑 → `service.js` 加方法，第一行 `assertRole`。
 4. 暴露接口 → `server.js` 加路由（注意正则顺序）。
@@ -679,13 +685,14 @@ Windows 没有 WSL 也不能成为不测的理由：可以使用便携 JDK 21、
 2. **当前这一步**（`.stage-block`）——每个阶段**只有一个动词明确的主按钮**：我接这单 / 我到现场了 / 开始维修 / 修完了，转试运行 / 结单。分支（等零件、外协、返工）做成次要按钮。表在 `STAGE_ACTIONS` 和 `STAGE_BRANCHES`。
 3. **问题信息** —— 一直可见。
 4. **已到场：核对报修信息** —— 故障分类与“报修信息有误，更改设备？”合并在同一区块；两项确认后才能开始维修。
-5. **开始维修后解锁**：诊断原因、维修方法和使用零件；报修信息区块不再重复出现。需要纠错时用单独按钮返回 `ARRIVED`，再修改并重新开工。
-6. **待试运行**：用单选项保存结构化结果。正常运行可结单；可运行但仍存在问题必须填写说明；无法运行只能返回维修。
-7. **结单前检查**（`TRIAL_RUN` 阶段）—— 五道硬校验（故障设备、故障分类、诊断原因、维修措施、试运行）各一行，✓/✗ 一眼看到，缺项写明"去哪补"，按钮禁用并显示"还差 N 项才能结单"。
+5. **开始维修后解锁**：诊断原因、维修方法、使用零件和巡检工单的完成照片；报修信息区块不再重复出现。错误零件可删除后重填；设备或分类要纠错时返回 `ARRIVED`，再修改并重新开工。
+6. **待试运行**：维修记录、使用零件和完成照片编辑区全部隐藏，只保留结构化试运行单选项。正常运行可结单；可运行但仍存在问题必须填写说明；无法运行或维修资料有误都显式返回 `IN_PROGRESS`。
+7. **结单前检查**（`TRIAL_RUN` 阶段）—— 五道硬校验（故障设备、故障分类、诊断原因、维修措施、试运行）及按需完成照片各一行。缺项行是可点击按钮：前端根据 `data-return-status` 沿状态机返回，再用 `scrollIntoView` 定位和聚焦目标表单；未补齐时结单按钮显示"还差 N 项才能结单"。
 
 三条实现约束：
 
 - **检查清单的判定条件必须和服务端 `transitionWorkOrder` 的五项结单校验一致**。前端只是把它们提前显示出来，**把关仍然在服务端**；`test/work-order-review.test.js` 和 `scripts/browser-smoke.js` 分别覆盖接口规则与真实页面运行。
+- **阶段隐藏必须有服务端同等限制**。不能只把维修表单从 `TRIAL_RUN` 隐藏；`assertRepairStarted()` 同时拒绝直接接口修改。返回维修会清空旧试运行结果，避免返工后沿用旧结论。
 - **不是接单人就什么按钮都不给**，只显示「这张工单由某某负责，需要接手请让管理员转派」。判定 `isMineToWork` 和服务端 `assertOwnWorkOrder` 是同一套。
 - 阶段按钮用 `data-to-status` 属性携带目标状态，`bindWorkOrderForms` 里统一绑一次。**不要退回通用下拉**——按钮文案就是动作本身，技术员不用猜。
 
@@ -705,7 +712,7 @@ Windows 没有 WSL 也不能成为不测的理由：可以使用便携 JDK 21、
 
 - **systemd 用户服务** `~/.config/systemd/user/ysm-equipment-system.service`，`WorkingDirectory` 指向本目录，日志追加到 `data/server.log`，`Restart=on-failure`。
 - **改完代码必须重启服务**（`systemctl --user restart ysm-equipment-system.service`，或双击停止再启动），前端改动只需浏览器刷新。
-- **备份**：正式环境执行 `scripts/backup-production.js`，得到一致数据库、附件归档和 SHA-256 清单；用 `scripts/verify-backup.js` 校验。不要在线直接复制主库，恢复前必须停 App，并定期用 `scripts/restore-production.js` 做隔离演练。
+- **备份**：Windows 工厂环境对 `factory-data/equipment.db` 执行 `scripts/backup-production.js`，得到一致数据库、附件归档和 SHA-256 清单；用 `scripts/verify-backup.js` 校验。不要在线直接复制主库，恢复前必须停 App，并定期用 `scripts/restore-production.js` 做隔离演练。
 - **上 HTTPS 反代之后**：设 `YSM_SECURE_COOKIE=1`，并把 `PUBLIC_BASE_URL` 改成正式域名。
 
 ---

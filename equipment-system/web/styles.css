@@ -277,8 +277,12 @@ body.mobile-action-open { overflow: hidden; }
 /* 结单前检查：五道硬校验各一行，缺哪项一眼看到 */
 .detail-block.ready { border-color: var(--green-2); background: #f7fcf9; }
 .check-list { list-style: none; margin: 10px 0; padding: 0; display: grid; gap: 8px; }
-.check-list li { display: grid; grid-template-columns: 22px 110px 1fr; align-items: baseline; gap: 8px;
-  padding: 9px 11px; border-radius: 9px; background: white; border: 1px solid var(--line); font-size: 13px; }
+.check-list li { border-radius: 9px; background: white; border: 1px solid var(--line); font-size: 13px; overflow: hidden; }
+.check-row, .check-link { width: 100%; display: grid; grid-template-columns: 22px 110px 1fr; align-items: baseline;
+  gap: 8px; padding: 9px 11px; text-align: left; }
+.check-link { border: 0; border-radius: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.check-link:hover, .check-link:focus-visible { background: #fff0f0; color: inherit; outline: 2px solid #e7a5a5; outline-offset: -2px; }
+.check-link em { display: block; margin-top: 3px; color: var(--red); font-style: normal; font-weight: 700; }
 .check-list li.ok { border-color: #cfe6d8; }
 .check-list li.bad { border-color: #f0cccc; background: #fffafa; }
 .check-mark { font-weight: 800; text-align: center; }
@@ -286,6 +290,11 @@ body.mobile-action-open { overflow: hidden; }
 .check-list li.bad .check-mark { color: var(--red); }
 .check-list li span:last-child { color: var(--muted); }
 .check-list li.bad span:last-child { color: var(--red); }
+.detail-block.attention-target { animation: attention-target 1.8s ease; }
+@keyframes attention-target {
+  0%, 100% { box-shadow: none; }
+  25%, 70% { box-shadow: 0 0 0 4px rgba(188, 52, 52, .18); }
+}
 
 /* 常用故障快捷按钮：手机上单手要点得准，所以按钮做大，一行两个 */
 .quick-fault { margin: 14px 0; }

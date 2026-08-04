@@ -85,6 +85,7 @@ const labels = {
   CREATED: '提交报修', CLAIMED: '技术员接单', REASSIGNED: '转派',
   STATUS_CHANGED: '状态流转', REPAIR_DETAIL_UPDATED: '更新维修记录',
   EQUIPMENT_CORRECTED: '修正故障设备', FAULT_CLASSIFIED: '确认故障分类', PART_ADDED: '记录零件',
+  PART_REMOVED: '删除错误零件记录',
   TRIAL_RESULT_UPDATED: '记录试运行结果',
   COMPLETION_PHOTO_ADDED: '拍摄维修完成照片',
   WITHDRAWN: '报修人撤回', REVIEWED: '报修人评价', REVIEW_UPDATED: '修改评价',
@@ -2103,7 +2104,7 @@ async function openWorkOrder(id) {
 }
 
 // 工单的阶段模型。每个阶段只给一个动词明确的主按钮，别再让人在"下一步"下拉里猜。
-// 到场之后才解锁的区块见 arrived()，动手之后才解锁的见 working()。
+// 到场之后才能核对；维修资料只在维修中及其分支显示，待试运行必须显式返回才能修改。
 const STAGE_ACTIONS = {
   ACCEPTED: { to: 'ARRIVED', label: '我到现场了' },
   ARRIVED: { to: 'IN_PROGRESS', label: '开始维修' },
@@ -2118,7 +2119,7 @@ const STAGE_BRANCHES = {
     { to: 'ARRIVED', label: '返回核对报修信息' }],
   WAITING_PARTS: [{ to: 'ARRIVED', label: '返回核对报修信息' }],
   OUTSOURCED: [{ to: 'ARRIVED', label: '返回核对报修信息' }],
-  TRIAL_RUN: [{ to: 'IN_PROGRESS', label: '试运行不通过，返工' }],
+  TRIAL_RUN: [{ to: 'IN_PROGRESS', label: '维修资料有误？返回维修', focus: 'repair-record-block' }],
 };
 
 // 步骤条：当前走到第几步。等零件/外协/待审核并到所属阶段，不占独立步骤。
@@ -2146,8 +2147,7 @@ function renderWorkOrderDetail() {
   // 推进工单要求是接单人本人，管理员不受限（服务端 assertOwnWorkOrder 同一套判定）。
   const isMineToWork = canClose || (w.assignee_user_id && w.assignee_user_id === state.me.user_id);
   // 到场之后才能判断是哪台设备、什么故障；动手之后才有诊断和零件。
-  const arrived = postArrivalStatuses.includes(w.status);
-  const working = !['ARRIVED'].includes(w.status) && arrived;
+  const repairEditing = ['IN_PROGRESS', 'WAITING_PARTS', 'OUTSOURCED'].includes(w.status);
   const canOperate = isMineToWork && !closed;
   const reportInfoReady = Boolean(w.final_equipment_id && w.fault_code_id);
   const currentTrialResult = trialResultMeta(w.trial_result);
@@ -2209,7 +2209,7 @@ function renderWorkOrderDetail() {
   const action = STAGE_ACTIONS[w.status];
   const branches = STAGE_BRANCHES[w.status] || [];
   const stepButton = (item, cls = '') =>
-    `<button class="${cls}" data-to-status="${item.to}">${escapeHtml(item.label)}</button>`;
+    `<button class="${cls}" data-to-status="${item.to}" ${item.focus ? `data-focus-target="${item.focus}"` : ''}>${escapeHtml(item.label)}</button>`;
 
   let stageBody;
   if (closed) {
@@ -2259,17 +2259,17 @@ function renderWorkOrderDetail() {
     </section>`;
 
   // ── 开始维修之后才解锁：没动手就没有诊断，也不会用掉零件 ──
-  const workingBlocks = !working ? '' : `
-    <section class="detail-block"><h3>维修记录</h3>${canOperate
+  const workingBlocks = !repairEditing ? '' : `
+    <section class="detail-block" id="repair-record-block"><h3>维修记录</h3>${canOperate
       ? `<form class="inline-form" id="repair-detail-form"><label class="wide">诊断原因（结单前必填）<textarea name="diagnosis">${escapeHtml(w.diagnosis || '')}</textarea></label><label class="wide">维修方法（结单前必填）<textarea name="repair_action">${escapeHtml(w.repair_action || '')}</textarea></label><div class="wide"><button type="button" class="button-link small" id="downtime-edit">停机时长不准确？手动修正</button></div><div class="wide inline-form" id="downtime-fields" ${w.downtime_is_override ? '' : 'hidden'}><label>人工修正停机分钟<input type="number" min="0" name="downtime_minutes" value="${w.downtime_is_override ? escapeHtml(w.downtime_minutes ?? '') : ''}" placeholder="留空则结单时自动计算"></label><label>停机时长修正原因<input name="downtime_override_reason" value="${escapeHtml(w.downtime_override_reason || '')}" placeholder="人工填写分钟时必填"></label></div><button>保存维修记录</button></form>`
       : '<p class="hint">只有接单人能填。</p>'}</section>
-    <section class="detail-block"><h3>使用零件</h3>${canOperate
+    <section class="detail-block" id="parts-block"><h3>使用零件</h3>${canOperate
       ? `<form class="inline-form" id="part-form"><label>零件名称<input name="part_name" required></label><label>型号规格<input name="specification"></label><label>零件编码<input name="part_code"></label><label>数量<input type="number" step="0.01" min="0.01" name="quantity" value="1" required></label><label>单位<input name="unit" value="个" required></label><label>零件状态<select name="part_condition"><option value="NEW">新件</option><option value="REUSED">复用件</option><option value="REPAIRED">修复件</option></select></label><label>单价<input type="number" step="0.01" min="0" name="unit_cost"></label><label>来源<input name="source"></label><label>旧件处理<input name="old_part_disposition"></label><button>添加零件</button></form>` : ''}
-      <div class="table-wrap"><table><thead><tr><th>零件</th><th>规格</th><th>数量</th><th>来源</th><th>记录人</th></tr></thead><tbody>${detail.parts.length ? detail.parts.map((p) => `<tr><td>${escapeHtml(p.part_name)}</td><td>${escapeHtml(p.specification || '—')}</td><td>${p.quantity} ${escapeHtml(p.unit)}</td><td>${escapeHtml(p.source || '—')}</td><td>${escapeHtml(p.recorded_by)}</td></tr>`).join('') : '<tr><td colspan="5" class="empty">未记录零件</td></tr>'}</tbody></table></div></section>`;
+      <div class="table-wrap"><table><thead><tr><th>零件</th><th>规格</th><th>数量</th><th>来源</th><th>记录人</th>${canOperate ? '<th>纠错</th>' : ''}</tr></thead><tbody>${detail.parts.length ? detail.parts.map((p) => `<tr><td>${escapeHtml(p.part_name)}</td><td>${escapeHtml(p.specification || '—')}</td><td>${p.quantity} ${escapeHtml(p.unit)}</td><td>${escapeHtml(p.source || '—')}</td><td>${escapeHtml(p.recorded_by)}</td>${canOperate ? `<td><button type="button" class="danger small" data-delete-part-id="${p.id}">删除错误记录</button></td>` : ''}</tr>`).join('') : `<tr><td colspan="${canOperate ? 6 : 5}" class="empty">未记录零件</td></tr>`}</tbody></table></div></section>`;
 
   const completionPhotoReady = Boolean(detail.completion_attachments?.length);
-  const completionPhotoBlock = !working || !w.requires_completion_photo ? '' : `
-    <section class="detail-block ${completionPhotoReady ? 'ready' : 'needs-attention'}">
+  const completionPhotoBlock = !repairEditing || !w.requires_completion_photo ? '' : `
+    <section class="detail-block ${completionPhotoReady ? 'ready' : 'needs-attention'}" id="completion-photo-block">
       <h3>维修完成照片（结单前必拍）<span class="status ${completionPhotoReady ? '' : 'danger'}">${completionPhotoReady ? '已拍摄' : '缺少照片'}</span></h3>
       <p class="hint">这张工单来自巡检。修复完成后请现场拍清设备和原问题部位，普通工单补拍照片不能代替。</p>
       ${completionPhotoReady ? attachmentStrip(detail.completion_attachments) : ''}
@@ -2277,34 +2277,35 @@ function renderWorkOrderDetail() {
     </section>`;
 
   const trialBlock = w.status !== 'TRIAL_RUN' ? '' : `
-    <section class="detail-block ${currentTrialResult ? (currentTrialResult.closable ? 'ready' : 'needs-attention') : 'needs-attention'}"><h3>试运行结果${currentTrialResult ? '' : '<span class="status danger">请选择</span>'}</h3>
+    <section class="detail-block ${currentTrialResult ? (currentTrialResult.closable ? 'ready' : 'needs-attention') : 'needs-attention'}" id="trial-result-block"><h3>试运行结果${currentTrialResult ? '' : '<span class="status danger">请选择</span>'}</h3>
       ${canOperate ? `<form id="trial-result-form" class="trial-form"><div class="trial-options">${trialResults.map((item) => `<label class="trial-option"><input type="radio" name="trial_result" value="${escapeHtml(item.value)}" ${w.trial_result === item.value ? 'checked' : ''}><span><strong>${escapeHtml(item.name)}</strong>${item.closable ? '' : '<small>不能结单，需要返回维修</small>'}</span></label>`).join('')}</div><label id="trial-issue-field" ${w.trial_result === 'OPERABLE_WITH_ISSUES' ? '' : 'hidden'}>问题说明<textarea name="trial_issue_description" maxlength="1000">${escapeHtml(w.trial_issue_description || '')}</textarea></label><button>保存试运行结果</button></form>` : '<p class="hint">只有接单人能填写试运行结果。</p>'}
-      ${w.trial_result === 'UNABLE_TO_RUN' ? '<p class="hint"><strong>当前设备无法运行，不能结单。请使用上方“试运行不通过，返工”。</strong></p>' : ''}
+      ${w.trial_result === 'UNABLE_TO_RUN' ? '<p class="hint"><strong>当前设备无法运行，不能结单。请使用上方“维修资料有误？返回维修”。</strong></p>' : ''}
     </section>`;
 
   // ── 结单前检查：硬校验各一行，缺哪项一眼看到，按钮就在下面 ──
   // 判定条件必须和服务端 transitionWorkOrder 保持一致。
   // 这里只是把它们提前显示出来，把关仍然在服务端。
   const checks = [
-    { ok: Boolean(currentTrialResult) || w.status === 'PENDING_REVIEW', name: '试运行结果', value: trialResultText(w), fix: '在上面「试运行结果」里选择' },
-    { ok: Boolean(w.diagnosis), name: '诊断原因', value: w.diagnosis, fix: '返回维修并填写「维修记录」' },
-    { ok: Boolean(w.repair_action), name: '维修方法', value: w.repair_action, fix: '返回维修并填写「维修记录」' },
-    { ok: Boolean(w.final_equipment_id), name: '故障设备归属', value: w.final_equipment_code, fix: '返回「核对报修信息」确认' },
-    { ok: Boolean(w.fault_code_id), name: '故障分类', value: w.fault_symptom, fix: '返回「核对报修信息」确认' },
+    { ok: Boolean(currentTrialResult) || w.status === 'PENDING_REVIEW', name: '试运行结果', value: trialResultText(w), fix: '点击填写试运行结果', target: 'trial-result-block' },
+    { ok: Boolean(w.diagnosis), name: '诊断原因', value: w.diagnosis, fix: '点击返回维修并填写', target: 'repair-record-block', returnStatus: 'IN_PROGRESS' },
+    { ok: Boolean(w.repair_action), name: '维修方法', value: w.repair_action, fix: '点击返回维修并填写', target: 'repair-record-block', returnStatus: 'IN_PROGRESS' },
+    { ok: Boolean(w.final_equipment_id), name: '故障设备归属', value: w.final_equipment_code, fix: '点击返回核对报修信息', target: 'report-info-block', returnStatus: 'ARRIVED' },
+    { ok: Boolean(w.fault_code_id), name: '故障分类', value: w.fault_symptom, fix: '点击返回核对报修信息', target: 'report-info-block', returnStatus: 'ARRIVED' },
     ...(w.requires_completion_photo ? [{
       ok: completionPhotoReady,
       name: '维修完成照片',
       value: completionPhotoReady ? `已拍${detail.completion_attachments.length}张` : '',
-      fix: '点击上方「打开相机拍摄」现场拍一张',
+      fix: '点击返回维修并现场拍摄',
+      target: 'completion-photo-block',
+      returnStatus: 'IN_PROGRESS',
     }] : []),
   ];
   const missing = checks.filter((item) => !item.ok).length;
   const closeBlock = (w.status !== 'TRIAL_RUN' && w.status !== 'PENDING_REVIEW') || !canOperate ? '' : `
     <section class="detail-block ${missing ? 'needs-attention' : 'ready'}"><h3>结单前检查</h3>
-      <ul class="check-list">${checks.map((item) => `<li class="${item.ok ? 'ok' : 'bad'}">
-        <span class="check-mark">${item.ok ? '✓' : '✗'}</span>
-        <strong>${item.name}</strong>
-        <span>${item.ok ? escapeHtml(item.value || '已填写') : `还没填 —— ${item.fix}`}</span></li>`).join('')}</ul>
+      <ul class="check-list">${checks.map((item) => `<li class="${item.ok ? 'ok' : 'bad'}">${item.ok
+        ? `<div class="check-row"><span class="check-mark">✓</span><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.value || '已填写')}</span></div>`
+        : `<button type="button" class="check-link" data-check-target="${item.target}" ${item.returnStatus ? `data-return-status="${item.returnStatus}"` : ''}><span class="check-mark">✗</span><strong>${escapeHtml(item.name)}</strong><span>还没填 —— ${escapeHtml(item.fix)}<em>去填写 →</em></span></button>`}</li>`).join('')}</ul>
       <p>${missing
         ? `<button disabled>还差 ${missing} 项才能结单</button>`
         : (w.status === 'PENDING_REVIEW' || currentTrialResult?.closable)
@@ -2328,6 +2329,44 @@ function renderWorkOrderDetail() {
     ${stageBar(w.status)}
     ${canRepair ? repairView : workerView}`;
   if (canRepair) bindWorkOrderForms(w.id);
+}
+
+function focusWorkOrderTarget(targetId) {
+  requestAnimationFrame(() => {
+    const target = document.querySelector(`#${targetId}`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.add('attention-target');
+    setTimeout(() => target.classList.remove('attention-target'), 1800);
+    target.querySelector('input:not([type="hidden"]), textarea, select, button:not(:disabled)')?.focus({ preventScroll: true });
+  });
+}
+
+async function returnWorkOrderToTarget(id, returnStatus, targetId) {
+  const currentStatus = state.selectedWorkOrder.work_order.status;
+  const sequence = [];
+  if (returnStatus === 'ARRIVED' && ['TRIAL_RUN', 'PENDING_REVIEW'].includes(currentStatus)) {
+    sequence.push('IN_PROGRESS', 'ARRIVED');
+  } else if (currentStatus !== returnStatus) {
+    sequence.push(returnStatus);
+  }
+  let updated = state.selectedWorkOrder;
+  try {
+    updated = await guarded(async () => {
+      for (const toStatus of sequence) {
+        updated = await api(`/api/work-orders/${id}/transition`, {
+          method: 'POST',
+          body: JSON.stringify({ to_status: toStatus, note: '从结单检查返回补充或纠正资料' }),
+        });
+      }
+      return updated;
+    }, '已返回对应填写步骤');
+  } catch { return false; }
+  state.selectedWorkOrder = updated;
+  renderWorkOrderDetail();
+  await Promise.all([loadWorkOrders(), loadDashboard()]);
+  focusWorkOrderTarget(targetId);
+  return true;
 }
 
 function bindWorkOrderForms(id) {
@@ -2359,7 +2398,17 @@ function bindWorkOrderForms(id) {
       button.disabled = true;
       const ok = await mutateWorkOrder(`/api/work-orders/${id}/transition`, 'POST',
         { to_status: button.dataset.toStatus }, `已${button.textContent.trim()}`);
+      if (ok && button.dataset.focusTarget) focusWorkOrderTarget(button.dataset.focusTarget);
       // 失败时按钮要能再点（成功的话整块已经重渲染了）
+      if (!ok) button.disabled = false;
+    });
+  }
+  for (const button of document.querySelectorAll('#work-order-detail [data-check-target]')) {
+    button.addEventListener('click', async () => {
+      const targetId = button.dataset.checkTarget;
+      if (!button.dataset.returnStatus) return focusWorkOrderTarget(targetId);
+      button.disabled = true;
+      const ok = await returnWorkOrderToTarget(id, button.dataset.returnStatus, targetId);
       if (!ok) button.disabled = false;
     });
   }
@@ -2378,6 +2427,18 @@ function bindWorkOrderForms(id) {
       { idempotent: true },
     );
   });
+  for (const button of document.querySelectorAll('[data-delete-part-id]')) {
+    button.addEventListener('click', async () => {
+      if (!confirm('确认删除这条错误的零件记录？删除后可重新填写。')) return;
+      button.disabled = true;
+      const ok = await mutateWorkOrder(
+        `/api/work-orders/${id}/parts/${button.dataset.deletePartId}`,
+        'DELETE', {}, '错误零件记录已删除',
+      );
+      if (ok) focusWorkOrderTarget('parts-block');
+      else button.disabled = false;
+    });
+  }
   const reportInfoEdit = document.querySelector('#report-info-edit');
   if (reportInfoEdit) reportInfoEdit.addEventListener('click', () => {
     const forms = document.querySelector('#report-info-forms');

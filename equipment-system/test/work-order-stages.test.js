@@ -179,6 +179,38 @@ test('已到场只开放报修信息核对，维修记录和零件要等开工',
   f.db.close();
 });
 
+test('待试运行只允许填写试运行结果，维修资料有误必须返回维修再改', () => {
+  const f = fixture();
+  const id = report(f);
+  f.service.assignWorkOrder(id, {}, f.technician);
+  f.service.transitionWorkOrder(id, { to_status: 'ARRIVED' }, f.technician);
+  f.service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, f.technician);
+  f.service.updateRepairDetail(id, { diagnosis: '轴承缺油', repair_action: '补充润滑脂' }, f.technician);
+  const part = f.service.addWorkOrderPart(id, {
+    part_name: '错误型号轴承', quantity: 1, unit: '只',
+  }, f.technician);
+  f.service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, f.technician);
+
+  const blockedActions = [
+    () => f.service.updateRepairDetail(id, { diagnosis: '试图越阶段修改' }, f.technician),
+    () => f.service.addWorkOrderPart(id, { part_name: '越阶段零件', quantity: 1, unit: '只' }, f.technician),
+    () => f.service.deleteWorkOrderPart(id, part.id, f.technician),
+  ];
+  for (const action of blockedActions) {
+    assert.throws(action, (error) => error.code === 'RETURN_TO_REPAIR_REQUIRED');
+  }
+  assert.doesNotThrow(() => f.service.updateTrialResult(id, { trial_result: 'NORMAL' }, f.technician));
+
+  f.service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, f.technician);
+  assert.doesNotThrow(() => f.service.updateRepairDetail(id, {
+    diagnosis: '轴承型号确认错误', repair_action: '更换正确型号轴承',
+  }, f.technician));
+  const updated = f.service.deleteWorkOrderPart(id, part.id, f.technician);
+  assert.equal(updated.parts.length, 0);
+  assert.ok(updated.history.some((item) => item.event_type === 'PART_REMOVED'));
+  f.db.close();
+});
+
 test('管理员可以在派单前修正报修信息，但不能提前填写维修记录', () => {
   const f = fixture();
   const id = report(f);

@@ -1,14 +1,12 @@
-# 公开演示数据
+# 工厂源数据快照（受保护）
 
-这里保存的是 2026-07-29 测试环境的一致性快照，用于让 GitHub 访问者复现当前设备管理系统成果。它不是工厂正式数据。
+用户已在 2026-08-04 明确确认：这里的 `equipment-demo.db` 实际包含工厂当前使用的 205 台设备数据，不是可随意重置、覆盖或公开分发的普通演示库。虽然历史上文件名和说明写成了 demo，但后续操作必须按正式现场数据保护。
 
-## 演示账号
+Windows 日常服务不直接写这个被 Git 跟踪的源文件，而是使用经过停服备份和完整性校验后生成的 `../factory-data/equipment.db`。这样后续拉取代码不会覆盖持续写入的运行数据。源文件、运行副本、WAL/SHM、附件和备份都不得删除或覆盖。
 
-三个账号统一使用公开演示密码：
+## 账号
 
-```text
-ysm-demo-2026!
-```
+工厂库包含三个账号，密码已按用户要求统一重置；仓库文档不得记录当前密码明文：
 
 | 工号 | 姓名 | 级别 |
 |---|---|---|
@@ -16,36 +14,19 @@ ysm-demo-2026!
 | `w002` | 222 | 二级技术员 |
 | `w001` | 111 | 一级普工 |
 
-快照制作时已经：
+2026-08-04 切换时已经：
 
 - 清除所有 Web 会话；
-- 清除 Android 通知设备令牌；
 - 清除登录失败/锁定记录；
-- 清除幂等请求缓存；
 - 为三个账号重新生成独立的 scrypt 盐和密码哈希；
 - 执行 `PRAGMA integrity_check` 和 `PRAGMA foreign_key_check`。
 
 ## 文件
 
-- `equipment-demo.db`：SQLite 演示数据库；
-- `attachments-demo.tar.gz`：与数据库配套的测试附件。
+- `equipment-demo.db`：历史命名的 SQLite 工厂源库；
+- `attachments-demo.tar.gz`：与源库配套的附件归档。
 
-SHA-256：
+## 恢复约束
 
-```text
-23ababb6e84bba2c1e940d8cceab790783eb09113b67b3ccf27fc902db201285  equipment-demo.db
-704e07feabab9ecaec832c74ea43f1b000425989135f92c2b6bf9bfe8c9256ea  attachments-demo.tar.gz
-```
-
-## 本地使用
-
-以下操作会替换本地运行数据。先停止服务并备份自己的 `data/`，再从仓库根目录执行：
-
-```bash
-mkdir -p equipment-system/data
-cp equipment-system/demo-data/equipment-demo.db equipment-system/data/equipment.db
-tar -xzf equipment-system/demo-data/attachments-demo.tar.gz -C equipment-system/data
-```
-
-随后按主 README 启动系统，使用上面的演示账号登录。
+禁止用普通复制命令覆盖任何现有运行库。需要重新生成或恢复 `factory-data/` 时，必须先停止服务，对当前运行库和源库分别执行一致性备份并校验，再在用户明确授权下操作。自动化测试和 Android 联调只能使用 `%TEMP%` 下的独立数据库。
 

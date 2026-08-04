@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $projectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $dataDir = Join-Path $projectDir 'data'
+$databasePath = Join-Path $projectDir 'factory-data\equipment.db'
 $port = 8787
 $localUrl = "http://127.0.0.1:$port"
 $serverEntry = Join-Path $projectDir 'src\server.js'
@@ -116,6 +117,9 @@ try {
     & $npm.Source ci
     if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
   }
+  if (-not (Test-Path -LiteralPath $databasePath)) {
+    throw "Factory database is missing: $databasePath. Do not create an empty database; restore the verified factory backup first."
+  }
 
   $lanAddress = Get-PrivateLanAddress
   if (-not $lanAddress) { throw 'No private LAN IPv4 was found. Connect this PC to the factory Wi-Fi and try again.' }
@@ -126,10 +130,16 @@ try {
     exit 0
   }
 
+  $apkPreparation = Join-Path $PSScriptRoot 'prepare-mobile-apk-windows.ps1'
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $apkPreparation -ServerUrl $phoneUrl
+  if ($LASTEXITCODE -ne 0) { throw 'Android APK preparation failed.' }
+
   if (Test-PortInUse) {
     if (Test-Health) {
       Write-Host "The equipment system is already running: $localUrl" -ForegroundColor Green
       Write-Host "Phone address: $phoneUrl"
+      Write-Host "Phone install: $phoneUrl/%E6%89%8B%E6%9C%BA%E5%AE%89%E8%A3%85.html"
+      Write-Host "Factory database: $databasePath"
       Open-LocalPage
       exit 0
     }
@@ -140,13 +150,14 @@ try {
   $env:HOST = '0.0.0.0'
   $env:PORT = [string]$port
   $env:PUBLIC_BASE_URL = $phoneUrl
-  $env:YSM_DB_PATH = Join-Path $dataDir 'equipment.db'
+  $env:YSM_DB_PATH = $databasePath
 
   Write-Host ''
   Write-Host 'YSM Equipment System - Full Features' -ForegroundColor Green
   Write-Host "PC:             $localUrl"
   Write-Host "Phone:          $phoneUrl"
   Write-Host "Phone install:  $phoneUrl/%E6%89%8B%E6%9C%BA%E5%AE%89%E8%A3%85.html"
+  Write-Host "Database:       $databasePath"
   Write-Host ''
 
   if ($Foreground) {

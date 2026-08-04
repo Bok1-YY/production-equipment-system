@@ -9,4 +9,10 @@ if errorlevel 1 (
   echo.
   echo Full launcher stopped with an error. See the message above.
   pause
+  exit /b 1
 )
+
+echo.
+echo The system is running in the background. Keep this window for the phone install address.
+echo Press any key to close this window; the service will keep running.
+pause >nul

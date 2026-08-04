@@ -180,7 +180,11 @@ test('巡检转出的工单必须由接单技工拍维修完成照片才能结�
   service.updateTrialResult(id, { trial_result: 'NORMAL' }, technician);
   assert.throws(() => service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, technician),
     (error) => error.code === 'REPAIR_COMPLETION_PHOTO_REQUIRED');
+  assert.throws(() => service.addWorkOrderCompletionAttachments(id, {
+    attachments: [photo('越阶段补拍.jpg')],
+  }, technician), (error) => error.code === 'RETURN_TO_REPAIR_REQUIRED');
 
+  service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, technician);
   const completionPhotos = service.addWorkOrderCompletionAttachments(id, {
     attachments: [photo('维修完成.jpg')],
   }, technician);
@@ -191,6 +195,8 @@ test('巡检转出的工单必须由接单技工拍维修完成照片才能结�
   assert.equal(detail.attachments.length, 1);
   assert.equal(detail.completion_attachments.length, 1);
   assert.ok(detail.history.some((item) => item.event_type === 'COMPLETION_PHOTO_ADDED'));
+  service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, technician);
+  service.updateTrialResult(id, { trial_result: 'NORMAL' }, technician);
   assert.equal(service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, technician).work_order.status,
     'COMPLETED');
   cleanup();

@@ -563,6 +563,9 @@ async function handleApi(request, response, url) {
   if (method === 'POST' && (params = match(pathname, /^\/api\/work-orders\/(\d+)\/attachments$/))) {
     return success(response, service.addWorkOrderAttachments(params[0], body, context), 201);
   }
+  if (method === 'POST' && (params = match(pathname, /^\/api\/work-orders\/(\d+)\/completion-attachments$/))) {
+    return success(response, service.addWorkOrderCompletionAttachments(params[0], body, context), 201);
+  }
 
   // 技术员只能看自己的综合分，服务端只认会话里的 user_id。放在 /api/reviews 之前匹配。
   if (method === 'GET' && pathname === '/api/reviews/me') {

@@ -41,7 +41,9 @@ const DEFAULT_ATTACHMENT_ROOT = path.join(DEFAULT_DATA_DIR, 'attachments');
 const MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_TARGET = 6;
 const MAX_ATTACHMENTS_TOTAL_BYTES = MAX_ATTACHMENT_BYTES * MAX_ATTACHMENTS_PER_TARGET;
-const ATTACHMENT_TARGETS = new Set(['WORK_ORDER', 'PATROL', 'TASK', 'WORK_ORDER_REVIEW']);
+const ATTACHMENT_TARGETS = new Set([
+  'WORK_ORDER', 'WORK_ORDER_COMPLETION', 'PATROL', 'TASK', 'WORK_ORDER_REVIEW',
+]);
 const TASK_KINDS = new Set(['INSPECTION', 'MAINTENANCE']);
 const TASK_SCHEDULES = new Set(['DAILY', 'WEEKLY', 'INTERVAL', 'FIXED', 'MANUAL']);
 const TASK_TARGETS = new Set(['PROCESS', 'EQUIPMENT']);
@@ -1430,9 +1432,11 @@ class EquipmentService {
       partsByOrder.set(part.work_order_id, [...(partsByOrder.get(part.work_order_id) || []), part]);
     }
     const orderPhotos = this.attachmentsByTarget('WORK_ORDER', workOrders.map((item) => item.id));
+    const completionPhotos = this.attachmentsByTarget('WORK_ORDER_COMPLETION', workOrders.map((item) => item.id));
     for (const order of workOrders) {
       order.parts = partsByOrder.get(order.id) || [];
       order.attachments = orderPhotos.get(order.id) || [];
+      order.completion_attachments = completionPhotos.get(order.id) || [];
       // 履历里带上评分：翻维修记录时能直接看出这次修得好不好。
       const review = this.workOrderReview(order.id);
       order.review_overall = review?.overall_score ?? null;
@@ -1462,7 +1466,8 @@ class EquipmentService {
         total_downtime_minutes: owned.reduce((sum, item) => sum + (Number(item.downtime_minutes) || 0), 0),
         last_repair_at: completed[0]?.completed_at || null,
         parts_replaced: owned.reduce((sum, item) => sum + item.parts.length, 0),
-        photos: owned.reduce((sum, item) => sum + item.attachments.length, 0)
+        photos: owned.reduce((sum, item) =>
+          sum + item.attachments.length + item.completion_attachments.length, 0)
           + patrols.reduce((sum, item) => sum + item.attachments.length, 0),
         patrols: patrols.length,
         last_patrol_at: patrols[0]?.patrolled_at || null,
@@ -1834,7 +1839,11 @@ class EquipmentService {
     const workOrder = this.db.prepare(`
       SELECT w.*, p.name AS process_name, l.name AS line_name,
              re.code AS reported_equipment_code, re.standard_name AS reported_equipment_name,
-             fe.code AS final_equipment_code, fe.standard_name AS final_equipment_name
+             fe.code AS final_equipment_code, fe.standard_name AS final_equipment_name,
+             (SELECT pr.id FROM patrol_records pr WHERE pr.work_order_id=w.id ORDER BY pr.id LIMIT 1)
+               AS source_patrol_id,
+             (SELECT pr.patrol_no FROM patrol_records pr WHERE pr.work_order_id=w.id ORDER BY pr.id LIMIT 1)
+               AS source_patrol_no
       FROM work_orders w
       JOIN processes p ON p.id = w.process_id
       JOIN production_lines l ON l.id = p.line_id
@@ -1850,11 +1859,14 @@ class EquipmentService {
     const review = this.workOrderReview(workOrderId);
     const canSeeReview = !context || context.role === ROLES.ADMIN
       || (review && review.reviewer_user_id === context.user_id);
+    const workOrderObject = asObject(workOrder);
+    workOrderObject.requires_completion_photo = Boolean(workOrderObject.source_patrol_id);
     return {
-      work_order: asObject(workOrder),
+      work_order: workOrderObject,
       parts: asObjects(this.db.prepare('SELECT * FROM work_order_parts WHERE work_order_id = ? ORDER BY id').all(workOrderId)),
       history: asObjects(this.db.prepare('SELECT * FROM work_order_history WHERE work_order_id = ? ORDER BY id').all(workOrderId)),
       attachments: this.listAttachments('WORK_ORDER', workOrderId),
+      completion_attachments: this.listAttachments('WORK_ORDER_COMPLETION', workOrderId),
       review: canSeeReview ? review : null,
       has_review: Boolean(review),
     };
@@ -1996,6 +2008,17 @@ class EquipmentService {
     }
     if (to === 'COMPLETED' && !current.repair_action) {
       throw new DomainError('完成工单前必须填写维修方法', 409, 'REPAIR_ACTION_REQUIRED');
+    }
+    if (to === 'COMPLETED' && current.requires_completion_photo) {
+      const completionPhotoCount = Number(this.db.prepare(`
+        SELECT COUNT(*) AS count FROM attachments
+        WHERE target_type='WORK_ORDER_COMPLETION' AND target_id=?
+      `).get(current.id).count);
+      if (!completionPhotoCount) {
+        throw new DomainError(
+          '这张工单来自设备巡检，结单前必须由技工现场拍摄至少一张维修完成照片',
+          409, 'REPAIR_COMPLETION_PHOTO_REQUIRED');
+      }
     }
     const time = nowIso();
     let extraSql = '';
@@ -3115,11 +3138,38 @@ class EquipmentService {
     }
   }
 
+  // 巡检问题的“发现时照片”和“修完后照片”必须分开存。普通工单补拍照片不能冒充
+  // 整改完成凭证；只有接单技工在开工后拍摄的专用照片才能通过结单校验。
+  addWorkOrderCompletionAttachments(id, input, context) {
+    assertRole(context.role, [ROLES.TECHNICIAN, ROLES.ADMIN]);
+    const order = this.getWorkOrder(id).work_order;
+    if (!order.requires_completion_photo) {
+      throw new DomainError('只有巡检转入的维修工单需要维修完成照片', 409, 'COMPLETION_PHOTO_NOT_REQUIRED');
+    }
+    this.assertRepairStarted(order, context, '拍摄维修完成照片');
+    const photos = Array.isArray(input.attachments) ? input.attachments : [];
+    if (!photos.length) throw new DomainError('请先现场拍摄维修完成照片', 400, 'REPAIR_COMPLETION_PHOTO_REQUIRED');
+    const written = [];
+    try {
+      return transaction(this.db, () => {
+        written.push(...this.storeAttachments('WORK_ORDER_COMPLETION', order.id, photos, context));
+        this.history(order.id, 'COMPLETION_PHOTO_ADDED', order.status, order.status, context.actor,
+          `上传${photos.length}张维修完成照片`, null);
+        return this.listAttachments('WORK_ORDER_COMPLETION', order.id);
+      });
+    } catch (error) {
+      for (const item of written) { try { fs.unlinkSync(item.absolute); } catch { /* 已经不在就算了 */ } }
+      throw error;
+    }
+  }
+
   attachmentFile(id, context) {
     const row = asObject(this.db.prepare('SELECT * FROM attachments WHERE id=?').get(positiveId(id, '照片')));
     if (!row) throw new DomainError('照片不存在', 404, 'NOT_FOUND');
     // 普工只能看自己报修的工单的照片，和工单本身的可见性保持一致。
-    if (row.target_type === 'WORK_ORDER') this.getWorkOrder(row.target_id, context);
+    if (row.target_type === 'WORK_ORDER' || row.target_type === 'WORK_ORDER_COMPLETION') {
+      this.getWorkOrder(row.target_id, context);
+    }
     else if (row.target_type === 'TASK') this.getScheduledTask(row.target_id, context);
     else if (row.target_type === 'WORK_ORDER_REVIEW') {
       const review = asObject(this.db.prepare('SELECT reviewer_user_id FROM work_order_reviews WHERE id=?').get(row.target_id));
@@ -3145,7 +3195,7 @@ class EquipmentService {
     if (!row) throw new DomainError('照片不存在', 404, 'NOT_FOUND');
     const isOwner = row.uploader_user_id && row.uploader_user_id === context.user_id;
     if (!isOwner && context.role !== ROLES.ADMIN) throw new DomainError('只能删除自己上传的照片', 403, 'FORBIDDEN');
-    if (row.target_type === 'WORK_ORDER') {
+    if (row.target_type === 'WORK_ORDER' || row.target_type === 'WORK_ORDER_COMPLETION') {
       const order = this.getWorkOrder(row.target_id).work_order;
       if (CLOSED_WORK_ORDER_STATUSES.includes(order.status)) {
         throw new DomainError('已结束工单的照片不能删除', 409, 'WORK_ORDER_CLOSED');

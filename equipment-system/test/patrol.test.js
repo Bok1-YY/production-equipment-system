@@ -143,6 +143,59 @@ test('转维修会触发设备状态联动', () => {
   cleanup();
 });
 
+test('巡检转出的工单必须由接单技工拍维修完成照片才能结单', () => {
+  const { service, technician, worker, equipment, faultCode, cleanup } = fixture();
+  const patrol = service.createPatrolRecord({
+    equipment_id: equipment.id,
+    findings: '轴承持续异响，需要停机处理',
+    attachments: [photo('巡检发现.jpg')],
+  }, technician);
+  const converted = service.convertPatrolToWorkOrder(patrol.id, {
+    fault_code_id: faultCode.id, urgency: 'URGENT',
+  }, technician);
+  const id = converted.work_order.id;
+  let detail = service.getWorkOrder(id);
+  assert.equal(detail.work_order.source_patrol_id, patrol.id);
+  assert.equal(detail.work_order.source_patrol_no, patrol.patrol_no);
+  assert.equal(detail.work_order.requires_completion_photo, true);
+  assert.deepEqual(detail.completion_attachments, []);
+
+  service.assignWorkOrder(id, {}, technician);
+  assert.throws(() => service.addWorkOrderCompletionAttachments(id, {
+    attachments: [photo('过早拍摄.jpg')],
+  }, technician), (error) => error.code === 'REPAIR_NOT_STARTED');
+
+  service.transitionWorkOrder(id, { to_status: 'ARRIVED' }, technician);
+  service.transitionWorkOrder(id, { to_status: 'IN_PROGRESS' }, technician);
+  assert.throws(() => service.addWorkOrderCompletionAttachments(id, {
+    attachments: [photo('越权拍摄.jpg')],
+  }, worker), /无权/);
+
+  // 普通“补拍照片”不能冒充维修完成凭证。
+  service.addWorkOrderAttachments(id, { attachments: [photo('普通补拍.jpg')] }, technician);
+  service.updateRepairDetail(id, {
+    diagnosis: '轴承润滑不足', repair_action: '补充润滑并调整轴承间隙',
+  }, technician);
+  service.transitionWorkOrder(id, { to_status: 'TRIAL_RUN' }, technician);
+  service.updateTrialResult(id, { trial_result: 'NORMAL' }, technician);
+  assert.throws(() => service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, technician),
+    (error) => error.code === 'REPAIR_COMPLETION_PHOTO_REQUIRED');
+
+  const completionPhotos = service.addWorkOrderCompletionAttachments(id, {
+    attachments: [photo('维修完成.jpg')],
+  }, technician);
+  assert.equal(completionPhotos.length, 1);
+  assert.equal(completionPhotos[0].target_type, 'WORK_ORDER_COMPLETION');
+  assert.doesNotThrow(() => service.attachmentFile(completionPhotos[0].id, technician));
+  detail = service.getWorkOrder(id);
+  assert.equal(detail.attachments.length, 1);
+  assert.equal(detail.completion_attachments.length, 1);
+  assert.ok(detail.history.some((item) => item.event_type === 'COMPLETION_PHOTO_ADDED'));
+  assert.equal(service.transitionWorkOrder(id, { to_status: 'COMPLETED' }, technician).work_order.status,
+    'COMPLETED');
+  cleanup();
+});
+
 test('巡检记录进入设备履历，并计入统计', () => {
   const { service, technician, equipment, cleanup } = fixture();
   service.createPatrolRecord({ equipment_id: equipment.id, findings: '正常', attachments: [photo()] }, technician);

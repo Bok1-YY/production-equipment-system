@@ -55,7 +55,7 @@ npm run dev          # node --watch，改完自动重启
 ### 0.5 跑测试
 
 ```bash
-npm test                                   # node --test，当前 148 项（147 通过，1 项缺现场真实台账时跳过）
+npm test                                   # node --test，当前 149 项（148 通过，1 项缺现场真实台账时跳过）
 node scripts/http-smoke.js                 # HTTP 冒烟（需服务在跑）
 SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码后
 ```
@@ -111,7 +111,7 @@ SMOKE_PASSWORD=你的新密码 node scripts/http-smoke.js   # admin 改过密码
 ```
 equipment-system/
 │  ── 后端 ──
-├── src/server.js        HTTP 层：会话解析、98 条路由、静态服务、错误映射
+├── src/server.js        HTTP 层：会话解析、99 条路由、静态服务、错误映射
 ├── src/service.js       ★ 全部业务：EquipmentService，130 个方法
 ├── src/domain.js        纯逻辑：文本/编号校验、设备编码格式、工单状态机、
 │                        设备状态常量（手工 4 态 vs 系统 2 态）、角色断言
@@ -127,7 +127,7 @@ equipment-system/
 ├── web/app.js           ★ 全部前端逻辑（无框架、无模块化、按顺序执行）
 ├── web/styles.css       设计令牌（:root 变量）+ 组件样式 + 760px 移动端断点
 │
-│  ── 测试（node --test，148 项）──
+│  ── 测试（node --test，149 项）──
 ├── test/domain.test.js            编码格式与状态机（纯函数）
 ├── test/service.test.js           台账/编码/组合/导入/结构删除/工单/层级字段（12 项）
 ├── test/auth.test.js              密码/会话/三级/成员管理/工单可见性（11 项）
@@ -135,7 +135,7 @@ equipment-system/
 ├── test/equipment-history.test.js 设备履历聚合（4 项）
 ├── test/fault-codes.test.js       故障码三级结构、预置与报修校验、常用快捷按钮（15 项）
 ├── test/attachments.test.js       魔数校验、上限、回滚清理、可见性（10 项）
-├── test/patrol.test.js            巡检、转维修、履历集成（8 项）
+├── test/patrol.test.js            巡检、转维修、完成照片、履历集成（10 项）
 ├── test/work-order-review.test.js 结单权限与校验、评价、三档可见性（15 项）
 ├── test/work-order-withdraw.test.js 撤回边界与重新报修（8 项）
 ├── test/quick-report.test.js      普工极简报修、工序推导、故障分类后移（11 项）
@@ -292,7 +292,7 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
   - `is_common`：进不进普工报修页的「常见故障」快捷按钮。`frequentFaultCodes()` 先按该设备类型的历史频次排，**库里还没有工单时回退到 `is_common`**——否则第一天打开报修页是一排空按钮。加这个标记而不是硬编码"综合类优先"，是因为类别名管理员可以改，magic string 会静默失效。
     - `ensureColumn` 加列后有一次 `backfillCommonFaultCodes()`：只动 `is_seeded=1` 的行，且**任意一条已为 1 就不再补**——否则管理员取消掉的标记会在重启后复活（和"删掉的预置项不复活"同一个原则）。
   - 已被工单引用的只能停用不能删。
-- `attachments`：多态附件表（`target_type` 为 `WORK_ORDER` / `PATROL` / `TASK` / `WORK_ORDER_REVIEW`）。文件落 `data/attachments/YYYYMM/<32位随机名>.<ext>`，库里只存相对路径。
+- `attachments`：多态附件表（`target_type` 为 `WORK_ORDER` / `WORK_ORDER_COMPLETION` / `PATROL` / `TASK` / `WORK_ORDER_REVIEW`）。其中 `WORK_ORDER_COMPLETION` 是巡检转维修后的专用完成凭证，不能由普通工单照片替代。文件落 `data/attachments/YYYYMM/<32位随机名>.<ext>`，库里只存相对路径。
   - **服务端只认魔数字节**（JPEG `FF D8 FF`、PNG `89 50 4E 47`、WEBP `RIFF....WEBP`），绝不信前端声明的 mime——否则改个扩展名就能上传任意文件。
   - 单张 ≤2MB、每个对象 ≤6 张、解码后合计 ≤12MB；base64 做严格往返校验。前端先用 canvas 压到长边 1600px 再提交。
   - 落盘和写库在同一个 `transaction()` 里；任何一张失败都会 `unlinkSync` 清掉同批已写下的文件，不留孤儿。
@@ -305,6 +305,8 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
 只给 `equipment_id` 不给 `process_id` 时，会按当前安装关系自动带出所在工序。`convertPatrolToWorkOrder()` 一键转维修：巡检发现写进工单 `description`，`work_order_id` 回写实现双向关联，工单历史里留 `FROM_PATROL` 事件，并触发设备状态联动。
 
 巡检服务端强制至少一张附件；Android App 进一步通过自定义 `PatrolCameraPlugin` 调 `MediaStore.ACTION_IMAGE_CAPTURE`，使用 `FileProvider` 接收新拍 JPEG，不给相册选择入口。前端收到 Base64 后必须直接 `atob` 解码成 `Blob`，不能 `fetch(data:)`：页面 CSP 的 `connect-src 'self'` 会拒绝后者。随后 canvas 写入设备、巡检人和拍摄时间水印。非原生浏览器只有在 `getUserMedia` 可用时才允许巡检拍照，否则提示使用最新版 Android App，不能退回文件上传绕过现场要求。
+
+巡检转入的工单由 `source_patrol_id` / `source_patrol_no` 标识。开工后，接单技工使用同一个原生相机桥拍摄维修完成现场，前端改写“设备、维修人、时间”水印并上传到 `WORK_ORDER_COMPLETION`。`addWorkOrderCompletionAttachments()` 同时校验角色、接单人和维修阶段；`transitionWorkOrder(...COMPLETED)` 再按独立附件类型计数，普通 `WORK_ORDER` 补拍照片不能绕过 `REPAIR_COMPLETION_PHOTO_REQUIRED`。
 
 ### 3.8 结构化点检与保养
 
@@ -373,7 +375,7 @@ PENDING_REVIEW ──▶ COMPLETED / IN_PROGRESS   ← 不在正向路径上，�
 
 ---
 
-## 五、后端：`server.js` 的 98 条路由
+## 五、后端：`server.js` 的 99 条路由
 
 ### 5.1 请求流程
 
@@ -403,7 +405,7 @@ http.createServer
 - **二维码** `GET /api/qr/:token`(解析并记扫描日志) · `GET /api/qr/:token/image.svg`(实时生成 SVG) · `GET /api/qr/process-labels`
 - **评价** `POST /api/work-orders/:id/{withdraw,review,reopen}` · `GET /api/reviews/me`（L2 只看自己的综合分）· `GET /api/reviews`、`GET /api/reviews/technicians`（均 L3）
 - **故障代码** `GET /api/fault-codes`（报修用，只返启用的；`?all=1` 给管理页）· `POST /api/fault-codes` · `PUT|DELETE /api/fault-codes/:id`（写操作 L3）
-- **照片** `POST /api/work-orders/:id/attachments`（给已有工单补拍）· `GET /api/attachments/:id/file`（流式返回，按所属工单判可见性）· `DELETE /api/attachments/:id`
+- **照片** `POST /api/work-orders/:id/attachments`（给已有工单补拍）· `POST /api/work-orders/:id/completion-attachments`（巡检转维修后的技工完成照）· `GET /api/attachments/:id/file`（流式返回，按所属工单判可见性）· `DELETE /api/attachments/:id`
 - **巡检** `GET|POST /api/patrols`（L2+）· `GET /api/patrols/:id` · `POST /api/patrols/:id/to-work-order`
 - **点检保养** `/api/task-templates/:kind` · `/api/task-plans/:kind` · `/api/tasks/:kind` · `POST /api/tasks/:id/{execute,to-work-order,close-abnormal}`
 - **运营报表** `GET /api/reports/operations` · `GET /api/reports/operations.xlsx`

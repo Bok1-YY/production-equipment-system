@@ -42,7 +42,7 @@ public class PatrolCameraPlugin extends Plugin {
     @PermissionCallback
     private void cameraPermissionCallback(PluginCall call) {
         if (getPermissionState("camera") != PermissionState.GRANTED) {
-            call.reject("需要相机权限才能提交巡检记录", "CAMERA_PERMISSION_DENIED");
+            call.reject("需要相机权限才能完成现场拍照", "CAMERA_PERMISSION_DENIED");
             return;
         }
         launchCamera(call);
@@ -50,17 +50,17 @@ public class PatrolCameraPlugin extends Plugin {
 
     private void launchCamera(PluginCall call) {
         try {
-            File directory = new File(getContext().getCacheDir(), "patrol-camera");
+            File directory = new File(getContext().getCacheDir(), "field-camera");
             if (!directory.exists() && !directory.mkdirs()) {
                 call.reject("无法准备拍照缓存，请重试", "CAMERA_CACHE_FAILED");
                 return;
             }
-            pendingPhoto = File.createTempFile("patrol-", ".jpg", directory);
+            pendingPhoto = File.createTempFile("field-", ".jpg", directory);
             Uri outputUri = FileProvider.getUriForFile(
                 getContext(), getContext().getPackageName() + ".fileprovider", pendingPhoto);
             Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
             intent.putExtra(MediaStore.EXTRA_OUTPUT, outputUri);
-            intent.setClipData(ClipData.newRawUri("patrol-photo", outputUri));
+            intent.setClipData(ClipData.newRawUri("field-photo", outputUri));
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
             if (intent.resolveActivity(getContext().getPackageManager()) == null) {
                 discardPendingPhoto();

@@ -86,6 +86,7 @@ const labels = {
   STATUS_CHANGED: '状态流转', REPAIR_DETAIL_UPDATED: '更新维修记录',
   EQUIPMENT_CORRECTED: '修正故障设备', FAULT_CLASSIFIED: '确认故障分类', PART_ADDED: '记录零件',
   TRIAL_RESULT_UPDATED: '记录试运行结果',
+  COMPLETION_PHOTO_ADDED: '拍摄维修完成照片',
   WITHDRAWN: '报修人撤回', REVIEWED: '报修人评价', REVIEW_UPDATED: '修改评价',
   REOPENED: '重新报修', FROM_PATROL: '由巡检转入',
 };
@@ -222,7 +223,7 @@ function patrolWatermarkEquipment() {
   return state.equipment.find((item) => item.id === id) || null;
 }
 
-function finishPatrolWatermark(canvas, equipment) {
+function finishFieldWatermark(canvas, equipment, options = {}) {
   const context = canvas.getContext('2d');
   const fontSize = Math.max(18, Math.round(canvas.width * 0.025));
   const padding = Math.max(14, Math.round(fontSize * 0.7));
@@ -233,7 +234,7 @@ function finishPatrolWatermark(canvas, equipment) {
   }).format(new Date());
   const lines = [
     `${equipment.code} · ${equipment.alias || equipment.standard_name}`,
-    `巡检人：${state.me?.display_name || '未记录'}  拍摄时间：${timestamp}`,
+    `${options.actorLabel || '巡检人'}：${state.me?.display_name || '未记录'}  拍摄时间：${timestamp}`,
   ];
   const boxHeight = padding * 2 + lineHeight * lines.length;
   context.fillStyle = 'rgba(0, 0, 0, .62)';
@@ -245,13 +246,13 @@ function finishPatrolWatermark(canvas, equipment) {
     canvas.height - boxHeight + padding + index * lineHeight, canvas.width - padding * 2));
   const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
   return {
-    name: `巡检现场_${equipment.code}_${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`,
+    name: `${options.filePrefix || '巡检现场'}_${equipment.code}_${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`,
     dataUrl,
     content_base64: dataUrl.split(',')[1],
   };
 }
 
-function watermarkedCameraPhoto(video, equipment) {
+function watermarkedCameraPhoto(video, equipment, options = {}) {
   const sourceWidth = video.videoWidth || 1280;
   const sourceHeight = video.videoHeight || 720;
   const scale = Math.min(1, PHOTO_MAX_EDGE / Math.max(sourceWidth, sourceHeight));
@@ -259,10 +260,10 @@ function watermarkedCameraPhoto(video, equipment) {
   canvas.width = Math.round(sourceWidth * scale);
   canvas.height = Math.round(sourceHeight * scale);
   canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
-  return finishPatrolWatermark(canvas, equipment);
+  return finishFieldWatermark(canvas, equipment, options);
 }
 
-function watermarkedCapturedFile(file, equipment) {
+function watermarkedCapturedFile(file, equipment, options = {}) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const image = new Image();
@@ -273,7 +274,7 @@ function watermarkedCapturedFile(file, equipment) {
       canvas.width = Math.round(image.width * scale);
       canvas.height = Math.round(image.height * scale);
       canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
-      resolve(finishPatrolWatermark(canvas, equipment));
+      resolve(finishFieldWatermark(canvas, equipment, options));
     };
     image.onerror = () => {
       URL.revokeObjectURL(url);
@@ -295,15 +296,9 @@ function patrolCapacitorCamera() {
   return window.Capacitor?.Plugins?.PatrolCamera || null;
 }
 
-async function capturePatrolPhotoWithApp(equipment) {
-  const camera = patrolCapacitorCamera();
-  if (!camera?.takePhoto) throw new Error('当前安装包不支持现场拍照，请安装最新版安卓应用');
-  const result = await camera.takePhoto();
+function nativeCameraResultFile(result, fallbackPrefix = 'field') {
   if (!result?.dataUrl?.startsWith('data:image/')) {
     throw new Error('相机没有返回有效照片，请重新拍摄');
-  }
-  if (Number(document.querySelector('#patrol-equipment')?.value || 0) !== equipment.id) {
-    throw new Error('巡检设备已经改变，请重新拍摄');
   }
   const separator = result.dataUrl.indexOf(',');
   const metadata = result.dataUrl.slice(0, separator);
@@ -313,7 +308,19 @@ async function capturePatrolPhotoWithApp(equipment) {
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   const mimeType = metadata.match(/^data:([^;]+)/)?.[1] || 'image/jpeg';
   const blob = new Blob([bytes], { type: mimeType });
-  const file = new File([blob], result.name || `patrol-${Date.now()}.jpg`, { type: blob.type || 'image/jpeg' });
+  return new File([blob], result.name || `${fallbackPrefix}-${Date.now()}.jpg`, {
+    type: blob.type || 'image/jpeg',
+  });
+}
+
+async function capturePatrolPhotoWithApp(equipment) {
+  const camera = patrolCapacitorCamera();
+  if (!camera?.takePhoto) throw new Error('当前安装包不支持现场拍照，请安装最新版安卓应用');
+  const result = await camera.takePhoto();
+  if (Number(document.querySelector('#patrol-equipment')?.value || 0) !== equipment.id) {
+    throw new Error('巡检设备已经改变，请重新拍摄');
+  }
+  const file = nativeCameraResultFile(result, 'patrol');
   const photos = state.photos.patrol || (state.photos.patrol = []);
   if (photos.length >= MAX_PHOTOS) throw new Error(`最多只能拍摄${MAX_PHOTOS}张照片`);
   photos.push(await watermarkedCapturedFile(file, equipment));
@@ -411,6 +418,107 @@ async function handlePatrolNativeCapture(input) {
   state.patrolPhotoEquipmentId = equipment.id;
   renderPhotoGrid('patrol');
   updatePatrolPhotoRequirement();
+}
+
+function completionPhotoEquipment(workOrder) {
+  return state.equipment.find((item) => item.id === workOrder.final_equipment_id) || {
+    id: workOrder.final_equipment_id,
+    code: workOrder.final_equipment_code || '未编号设备',
+    standard_name: workOrder.final_equipment_name || '维修设备',
+    alias: '',
+  };
+}
+
+async function uploadCompletionPhoto(workOrderId, photo) {
+  await api(`/api/work-orders/${workOrderId}/completion-attachments`, {
+    method: 'POST',
+    body: JSON.stringify({
+      attachments: [{ content_base64: photo.content_base64, name: photo.name }],
+    }),
+  });
+  state.selectedWorkOrder = await api(`/api/work-orders/${workOrderId}`);
+  renderWorkOrderDetail();
+  flash('维修完成照片已上传');
+}
+
+async function captureCompletionPhotoWithApp(workOrder, equipment) {
+  const camera = patrolCapacitorCamera();
+  if (!camera?.takePhoto) throw new Error('当前安装包不支持现场拍照，请安装最新版安卓应用');
+  const result = await camera.takePhoto();
+  if (state.selectedWorkOrder?.work_order?.id !== workOrder.id) {
+    throw new Error('当前工单已经改变，请重新拍摄');
+  }
+  const file = nativeCameraResultFile(result, 'repair-completion');
+  const photo = await watermarkedCapturedFile(file, equipment, {
+    actorLabel: '维修人', filePrefix: '维修完成',
+  });
+  await uploadCompletionPhoto(workOrder.id, photo);
+}
+
+async function openWorkOrderCompletionCamera() {
+  const workOrder = state.selectedWorkOrder?.work_order;
+  if (!workOrder?.requires_completion_photo) return;
+  const equipment = completionPhotoEquipment(workOrder);
+  if (!equipment.id) return flash('请先确认实际故障设备，再拍维修完成照片', 'error');
+
+  if (window.Capacitor?.isNativePlatform?.()) {
+    try {
+      await captureCompletionPhotoWithApp(workOrder, equipment);
+    } catch (error) {
+      if (error?.code !== 'CAMERA_CANCELLED') flash(error.message || '维修完成照片拍摄失败，请重试', 'error');
+    }
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return flash('当前浏览器无法验证现场拍摄，请使用最新版安卓应用', 'error');
+  }
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } }, audio: false,
+    });
+  } catch (error) {
+    const denied = error?.name === 'NotAllowedError' || error?.name === 'SecurityError';
+    return flash(denied ? '没有摄像头权限，请在浏览器设置中允许后重试'
+      : '当前浏览器无法打开现场相机，请使用最新版安卓应用', 'error');
+  }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'drawer camera-drawer';
+  overlay.innerHTML = `<div class="drawer-backdrop"></div><div class="camera-panel" role="dialog" aria-modal="true" aria-label="维修完成拍摄">
+    <button type="button" class="drawer-close" aria-label="关闭相机">×</button>
+    <p class="eyebrow">${escapeHtml(equipment.code)} · ${escapeHtml(equipment.alias || equipment.standard_name)}</p>
+    <h2>拍摄维修完成照片</h2>
+    <div class="camera-preview"><video autoplay playsinline muted></video></div>
+    <p class="hint">请把修复后的设备和问题部位拍清楚，照片会自动写入设备、维修人和当前时间。</p>
+    <div class="camera-actions"><button type="button" data-camera-capture disabled>拍摄并上传</button><button type="button" class="secondary" data-camera-done>取消</button></div>
+  </div>`;
+  const video = overlay.querySelector('video');
+  const capture = overlay.querySelector('[data-camera-capture]');
+  const stop = () => {
+    stream.getTracks().forEach((track) => track.stop());
+    overlay.remove();
+  };
+  video.srcObject = stream;
+  video.addEventListener('loadedmetadata', () => { capture.disabled = false; }, { once: true });
+  capture.addEventListener('click', async () => {
+    capture.disabled = true;
+    try {
+      const photo = watermarkedCameraPhoto(video, equipment, {
+        actorLabel: '维修人', filePrefix: '维修完成',
+      });
+      await uploadCompletionPhoto(workOrder.id, photo);
+      stop();
+    } catch (error) {
+      flash(error.message || '维修完成照片上传失败，请重试', 'error');
+      capture.disabled = false;
+    }
+  });
+  overlay.querySelector('.drawer-backdrop').addEventListener('click', stop);
+  overlay.querySelector('.drawer-close').addEventListener('click', stop);
+  overlay.querySelector('[data-camera-done]').addEventListener('click', stop);
+  document.body.append(overlay);
 }
 
 function photoLightbox(attachment) {
@@ -2060,6 +2168,7 @@ function renderWorkOrderDetail() {
       <div><small>紧急程度</small>${escapeHtml(labels[w.urgency] || w.urgency || '一般')}</div>
       <div><small>停机</small>${w.is_downtime ? '是' : '否'}</div>
       <div><small>负责技术员</small>${escapeHtml(w.assignee || '待接单')}</div>
+      ${w.source_patrol_no ? `<div><small>来源巡检</small>${escapeHtml(w.source_patrol_no)}</div>` : ''}
       <div><small>响应用时</small>${elapsed(w.reported_at, w.arrived_at, w.assigned_at ? '已接单，未到场' : '等待接单')}</div>
       <div><small>维修用时</small>${elapsed(w.arrived_at, w.completed_at, w.arrived_at ? '维修中' : '未到场')}</div>
       ${w.description ? `<div class="wide"><small>补充说明</small>${escapeHtml(w.description)}</div>` : ''}
@@ -2074,7 +2183,10 @@ function renderWorkOrderDetail() {
       <div class="wide"><small>维修方法</small>${escapeHtml(w.repair_action || '维修中，暂无')}</div>
       <div><small>试运行结果</small>${escapeHtml(trialResultText(w))}</div>
       <div><small>完成时间</small>${w.completed_at ? formatTime(w.completed_at) : '—'}</div>
-    </div></section>`;
+    </div>
+    ${detail.completion_attachments?.length
+      ? `<h4 class="photo-heading">维修完成照片（${detail.completion_attachments.length}）</h4>${attachmentStrip(detail.completion_attachments)}`
+      : ''}</section>`;
 
   // 评价对技术员不可见：后端已经把 review 剥成 null，这里连块都不渲染。
   const reviewBlock = detail.review ? `
@@ -2155,6 +2267,15 @@ function renderWorkOrderDetail() {
       ? `<form class="inline-form" id="part-form"><label>零件名称<input name="part_name" required></label><label>型号规格<input name="specification"></label><label>零件编码<input name="part_code"></label><label>数量<input type="number" step="0.01" min="0.01" name="quantity" value="1" required></label><label>单位<input name="unit" value="个" required></label><label>零件状态<select name="part_condition"><option value="NEW">新件</option><option value="REUSED">复用件</option><option value="REPAIRED">修复件</option></select></label><label>单价<input type="number" step="0.01" min="0" name="unit_cost"></label><label>来源<input name="source"></label><label>旧件处理<input name="old_part_disposition"></label><button>添加零件</button></form>` : ''}
       <div class="table-wrap"><table><thead><tr><th>零件</th><th>规格</th><th>数量</th><th>来源</th><th>记录人</th></tr></thead><tbody>${detail.parts.length ? detail.parts.map((p) => `<tr><td>${escapeHtml(p.part_name)}</td><td>${escapeHtml(p.specification || '—')}</td><td>${p.quantity} ${escapeHtml(p.unit)}</td><td>${escapeHtml(p.source || '—')}</td><td>${escapeHtml(p.recorded_by)}</td></tr>`).join('') : '<tr><td colspan="5" class="empty">未记录零件</td></tr>'}</tbody></table></div></section>`;
 
+  const completionPhotoReady = Boolean(detail.completion_attachments?.length);
+  const completionPhotoBlock = !working || !w.requires_completion_photo ? '' : `
+    <section class="detail-block ${completionPhotoReady ? 'ready' : 'needs-attention'}">
+      <h3>维修完成照片（结单前必拍）<span class="status ${completionPhotoReady ? '' : 'danger'}">${completionPhotoReady ? '已拍摄' : '缺少照片'}</span></h3>
+      <p class="hint">这张工单来自巡检。修复完成后请现场拍清设备和原问题部位，普通工单补拍照片不能代替。</p>
+      ${completionPhotoReady ? attachmentStrip(detail.completion_attachments) : ''}
+      ${canOperate && !closed ? '<p><button type="button" id="completion-photo-camera">打开相机拍摄</button></p>' : ''}
+    </section>`;
+
   const trialBlock = w.status !== 'TRIAL_RUN' ? '' : `
     <section class="detail-block ${currentTrialResult ? (currentTrialResult.closable ? 'ready' : 'needs-attention') : 'needs-attention'}"><h3>试运行结果${currentTrialResult ? '' : '<span class="status danger">请选择</span>'}</h3>
       ${canOperate ? `<form id="trial-result-form" class="trial-form"><div class="trial-options">${trialResults.map((item) => `<label class="trial-option"><input type="radio" name="trial_result" value="${escapeHtml(item.value)}" ${w.trial_result === item.value ? 'checked' : ''}><span><strong>${escapeHtml(item.name)}</strong>${item.closable ? '' : '<small>不能结单，需要返回维修</small>'}</span></label>`).join('')}</div><label id="trial-issue-field" ${w.trial_result === 'OPERABLE_WITH_ISSUES' ? '' : 'hidden'}>问题说明<textarea name="trial_issue_description" maxlength="1000">${escapeHtml(w.trial_issue_description || '')}</textarea></label><button>保存试运行结果</button></form>` : '<p class="hint">只有接单人能填写试运行结果。</p>'}
@@ -2170,6 +2291,12 @@ function renderWorkOrderDetail() {
     { ok: Boolean(w.repair_action), name: '维修方法', value: w.repair_action, fix: '返回维修并填写「维修记录」' },
     { ok: Boolean(w.final_equipment_id), name: '故障设备归属', value: w.final_equipment_code, fix: '返回「核对报修信息」确认' },
     { ok: Boolean(w.fault_code_id), name: '故障分类', value: w.fault_symptom, fix: '返回「核对报修信息」确认' },
+    ...(w.requires_completion_photo ? [{
+      ok: completionPhotoReady,
+      name: '维修完成照片',
+      value: completionPhotoReady ? `已拍${detail.completion_attachments.length}张` : '',
+      fix: '点击上方「打开相机拍摄」现场拍一张',
+    }] : []),
   ];
   const missing = checks.filter((item) => !item.ok).length;
   const closeBlock = (w.status !== 'TRIAL_RUN' && w.status !== 'PENDING_REVIEW') || !canOperate ? '' : `
@@ -2189,6 +2316,7 @@ function renderWorkOrderDetail() {
     ${problemBlock}
     ${reportInfoBlock}
     ${workingBlocks}
+    ${completionPhotoBlock}
     ${trialBlock}
     ${closeBlock}
     ${reviewBlock}
@@ -2263,6 +2391,8 @@ function bindWorkOrderForms(id) {
     equipmentSelect.addEventListener('change', syncReasonRequired);
     syncReasonRequired();
   }
+  const completionCamera = document.querySelector('#completion-photo-camera');
+  if (completionCamera) completionCamera.addEventListener('click', openWorkOrderCompletionCamera);
   const downtimeEdit = document.querySelector('#downtime-edit');
   if (downtimeEdit) downtimeEdit.addEventListener('click', () => {
     const fields = document.querySelector('#downtime-fields');
@@ -2819,6 +2949,7 @@ function profileRepairTab(history) {
         <div><small>完成时间</small>${w.completed_at ? formatTime(w.completed_at) : '—'}</div>
       </div>
       ${w.attachments?.length ? `<h4 class="photo-heading">现场照片（${w.attachments.length}）</h4>${attachmentStrip(w.attachments)}` : ''}
+      ${w.completion_attachments?.length ? `<h4 class="photo-heading">维修完成照片（${w.completion_attachments.length}）</h4>${attachmentStrip(w.completion_attachments)}` : ''}
       ${w.parts.length ? `<div class="table-wrap"><table><thead><tr><th>更换零件</th><th>规格</th><th>数量</th><th>来源</th><th>记录人</th></tr></thead><tbody>
         ${w.parts.map((p) => `<tr><td>${escapeHtml(p.part_name)}</td><td>${escapeHtml(p.specification || '—')}</td><td>${p.quantity} ${escapeHtml(p.unit)}</td><td>${escapeHtml(p.source || '—')}</td><td>${escapeHtml(p.recorded_by)}</td></tr>`).join('')}
       </tbody></table></div>` : '<p class="hint">本次没有更换零件</p>'}
@@ -2873,7 +3004,9 @@ async function openEquipmentProfile(id) {
   overlay.className = 'drawer';
   // 灯箱要能找到这些照片，暂存到 state
   state.equipmentProfile = {
-    photos: [...history.work_orders.flatMap((w) => w.attachments || []),
+    photos: [...history.work_orders.flatMap((w) => [
+      ...(w.attachments || []), ...(w.completion_attachments || []),
+    ]),
       ...history.patrols.flatMap((p) => p.attachments || [])],
   };
   const tabs = [

@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>优胜美设备管理系统 · 操作指南</title>
+<style>
+:root {
+  --green: #14684b;
+  --green-dark: #0d4634;
+  --green-light: #e8f3ee;
+  --ink: #1c2b26;
+  --muted: #5b6b64;
+  --line: #d9e4df;
+  --warn-bg: #fff7e8;
+  --warn-line: #e8c476;
+  --card: #ffffff;
+  --bg: #f3f6f4;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  font-size: 16px; line-height: 1.75;
+}
+header.hero {
+  background: linear-gradient(160deg, var(--green-dark), var(--green));
+  color: #fff; padding: 40px 20px 32px;
+}
+.wrap { max-width: 860px; margin: 0 auto; padding: 0 4px; }
+header.hero .eyebrow { font-size: 14px; opacity: .85; letter-spacing: .12em; margin: 0 0 6px; }
+header.hero h1 { margin: 0 0 10px; font-size: 30px; line-height: 1.3; }
+header.hero p.sub { margin: 0; opacity: .9; font-size: 15px; }
+main { max-width: 860px; margin: 0 auto; padding: 20px 16px 64px; }
+section.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+  padding: 22px 22px 8px; margin: 18px 0;
+}
+h2 {
+  font-size: 22px; margin: 4px 0 14px; color: var(--green-dark);
+  padding-bottom: 8px; border-bottom: 2px solid var(--green-light);
+}
+h3 { font-size: 17.5px; margin: 22px 0 8px; color: var(--green-dark); }
+p { margin: 8px 0 14px; }
+ul, ol { margin: 6px 0 14px; padding-left: 1.4em; }
+li { margin: 4px 0; }
+table { width: 100%; border-collapse: collapse; margin: 10px 0 18px; font-size: 15px; }
+th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+th { background: var(--green-light); color: var(--green-dark); font-weight: 600; white-space: nowrap; }
+tr:nth-child(even) td { background: #fafcfb; }
+.table-scroll { overflow-x: auto; }
+code, .flow {
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  background: #eef3f0; border-radius: 5px; padding: 1px 6px; font-size: 14px;
+}
+pre.flow {
+  display: block; padding: 12px 14px; overflow-x: auto; line-height: 1.9;
+  border: 1px dashed var(--line); background: #f7faf8; margin: 10px 0 16px;
+}
+.note {
+  background: var(--green-light); border-left: 4px solid var(--green);
+  border-radius: 0 10px 10px 0; padding: 10px 14px; margin: 12px 0 16px; font-size: 15px;
+}
+.warn {
+  background: var(--warn-bg); border-left: 4px solid var(--warn-line);
+  border-radius: 0 10px 10px 0; padding: 10px 14px; margin: 12px 0 16px; font-size: 15px;
+}
+.badge {
+  display: inline-block; background: var(--green); color: #fff; border-radius: 999px;
+  font-size: 13px; padding: 2px 12px; margin-right: 8px; vertical-align: 2px;
+}
+.badge.gray { background: var(--muted); }
+nav.toc ol { columns: 2; column-gap: 28px; padding-left: 1.3em; margin: 8px 0 12px; }
+nav.toc a { color: var(--green-dark); text-decoration: none; }
+nav.toc a:hover { text-decoration: underline; }
+.step {
+  counter-reset: none; border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 16px; margin: 10px 0; background: #fbfdfc;
+}
+.step b.no {
+  display: inline-block; background: var(--green); color: #fff; border-radius: 50%;
+  width: 24px; height: 24px; line-height: 24px; text-align: center; font-size: 14px; margin-right: 8px;
+}
+footer {
+  text-align: center; color: var(--muted); font-size: 13.5px; padding: 0 16px 40px;
+}
+a { color: var(--green); }
+@media (max-width: 640px) {
+  body { font-size: 15.5px; }
+  header.hero h1 { font-size: 24px; }
+  nav.toc ol { columns: 1; }
+  section.card { padding: 16px 14px 4px; border-radius: 12px; }
+  th, td { padding: 7px 8px; font-size: 14px; }
+}
+@media print {
+  body { background: #fff; font-size: 12.5pt; }
+  header.hero { background: var(--green-dark) !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  section.card { border: none; padding: 0 0 4px; margin: 10px 0; break-inside: auto; }
+  section.card h2 { break-after: avoid; }
+  table, .step, .note, .warn, pre.flow { break-inside: avoid; }
+  nav.toc, .no-print { display: none; }
+  main { padding: 8px 0; max-width: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">YSM EQUIPMENT SYSTEM</p>
+    <h1>优胜美设备管理系统 · 操作指南</h1>
+    <p class="sub">适用对象：车间普工 · 维修技术员 · 设备科／生产管理员　｜　更新日期：2026-08-05</p>
+  </div>
+</header>
+
+<main>
+
+<section class="card no-print">
+  <h2>目录</h2>
+  <nav class="toc">
+    <ol>
+      <li><a href="#login">进入系统与登录</a></li>
+      <li><a href="#roles">角色与权限一览</a></li>
+      <li><a href="#worker">普工操作指南</a></li>
+      <li><a href="#tech">技术员操作指南</a></li>
+      <li><a href="#admin">管理员操作指南</a></li>
+      <li><a href="#common">通用功能说明</a></li>
+      <li><a href="#faq">常见问题（FAQ）</a></li>
+      <li><a href="#rules">使用注意事项</a></li>
+    </ol>
+  </nav>
+  <p class="note">本指南只讲<b>怎么用</b>。使用者只需阅读「自己角色」的那一章，再浏览通用功能和 FAQ 即可。可以直接用浏览器的「打印」功能把本页存成 PDF。</p>
+</section>
+
+<section class="card" id="login">
+  <h2>一、进入系统与登录</h2>
+
+  <h3>1.1 三种进入方式</h3>
+  <div class="table-scroll"><table>
+    <tr><th>方式</th><th>适合谁</th><th>怎么进</th></tr>
+    <tr><td>手机 App（推荐）</td><td>所有人，尤其是车间现场</td><td>安装公司发放的 Android 安装包（APK），桌面点「优胜美设备管理」图标</td></tr>
+    <tr><td>手机浏览器</td><td>临时没装 App</td><td>浏览器打开管理员提供的系统地址</td></tr>
+    <tr><td>电脑浏览器</td><td>管理员、办公室人员</td><td>浏览器打开同一地址</td></tr>
+  </table></div>
+  <p>电脑和手机是<b>同一套系统、同一套账号、同一份数据</b>，在哪边操作都一样，随时可以换着用。</p>
+
+  <h3>1.2 安装手机 App</h3>
+  <ol>
+    <li>用手机浏览器打开管理员提供的 APK 下载地址（一般为 <code>系统地址/downloads/ysm-equipment-mobile-test.apk</code>），或扫管理员提供的下载二维码；</li>
+    <li>下载完成后点击安装。手机若提示「未知来源应用」，按提示允许本次安装；</li>
+    <li>首次打开 App 时，<b>请允许「通知」权限</b>——技术员和管理员的新报修、技改任务提醒都靠它；</li>
+    <li>技术员日常还会用到<b>相机</b>权限（巡检拍照、完工拍照），首次拍照时按提示允许即可。</li>
+  </ol>
+  <p class="warn">手机和服务器必须在<b>同一网络</b>（公司 Wi-Fi）下，或使用管理员提供的公网地址。打开 App 显示「网页无法打开／无法连接」时，先检查手机 Wi-Fi 是否连对，再确认服务器已启动。</p>
+
+  <h3>1.3 登录</h3>
+  <ol>
+    <li>输入<b>工号</b>和<b>密码</b>（都由管理员分配），点「登录」；</li>
+    <li><b>首次登录会强制修改密码</b>：初始密码只能用这一次，改完才能进入系统。新密码<b>至少 12 位</b>，请设置成自己记得住、别人猜不到的组合；</li>
+    <li>忘记密码：找管理员在「成员管理」里<b>重置密码</b>，你会拿到一个新的一次性密码，登录后同样强制再改一次。</li>
+  </ol>
+  <p>登录状态最长保持 12 小时，之后需要重新登录。</p>
+
+  <h3>1.4 界面通用元素</h3>
+  <ul>
+    <li><b>顶部导航条</b>：左右滑动（手机）或直接点击切换功能页。你能看到哪些页面由你的级别决定；</li>
+    <li><b>右上角「更多」</b>：修改密码、退出登录；手机 App 里还有「服务器」（查看当前连接的服务器地址，一般不需要动）；</li>
+    <li><b>右下角「扫码」浮动按钮</b>：扫设备铭牌或工序二维码，普工直接进报修，技术员会出现「登记巡检 / 报修」二选一；</li>
+    <li><b>各页面的「刷新」按钮</b>：数据看起来不新时点一下。</li>
+  </ul>
+</section>
+
+<section class="card" id="roles">
+  <h2>二、角色与权限一览</h2>
+  <p>每个账号属于一个级别，级别由管理员指定。</p>
+  <div class="table-scroll"><table>
+    <tr><th>级别</th><th>角色</th><th>能看到的页面</th><th>核心权限</th></tr>
+    <tr><td>一级</td><td>普工</td><td>维修报修</td><td>扫码报修、撤回自己的误报、查看<b>自己报修的</b>工单进度、完工后给技术员打分、没修好可重新报修</td></tr>
+    <tr><td>二级</td><td>技术员</td><td>总览、维修报修、设备巡检、结构化点检、设备保养、设备台账（只读）、产线组合（只读）、技改任务（自己被分配的）、运营报表</td><td>抢单维修并结单、日常巡检、执行点检／保养任务、执行技改任务；只能推进<b>自己接的</b>工单；只能看到<b>自己的</b>综合评分</td></tr>
+    <tr><td>三级</td><td>管理员</td><td>全部页面</td><td>工单指派／转派／取消、设备台账与产线组合维护、发布和审核技改任务、点检保养模板与计划、故障代码维护、服务评价查看、成员管理、操作日志、运营报表</td></tr>
+  </table></div>
+  <p class="note">权限在服务器端强制校验。页面上看不到的功能，换个入口也做不了，不用担心误操作越权。</p>
+</section>
+
+<section class="card" id="worker">
+  <h2>三、普工操作指南<span class="badge">报修</span><span class="badge">撤回</span><span class="badge">评价</span></h2>
+  <p>普工登录后直接进入「维修报修」页。日常只需要掌握四件事：<b>报修、撤回、看进度、评价</b>。</p>
+
+  <h3>3.1 扫码报修（最快）</h3>
+  <div class="step"><b class="no">1</b>点右下角「扫码」，对准设备上的<b>铭牌二维码</b>；</div>
+  <div class="step"><b class="no">2</b>设备和所在工序自动填好；</div>
+  <div class="step"><b class="no">3</b>用一句话说清楚哪里不对劲，例如：<code>3号挤出机不出料了</code>；</div>
+  <div class="step"><b class="no">4</b>（可选）界面出现<b>常见故障快捷按钮</b>（如「整机无法启动」「漏油」）时，直接点一个，那句话都可以不打；</div>
+  <div class="step"><b class="no">5</b>（可选／有时必填）拍张现场照片。某些故障类型（如漏油）要求必须拍照，按钮上会提前标出「需拍照」；</div>
+  <div class="step"><b class="no">6</b>如果设备停机了，勾选「停机」；提交。完成，接下来等技术员接单。</div>
+
+  <h3>3.2 手动选设备报修（扫不了码时）</h3>
+  <ul>
+    <li>按「车间 → 产线 → 设备」一级一级缩小范围；设备名字带着<b>工位顺序和现场叫法</b>（比如「03 · 1#开槽分切多片锯」），跟你站在线上看到的顺序一致；</li>
+    <li>也可以直接在搜索框输入设备编号、现场名称或类型，跨车间直接搜；</li>
+    <li><b>实在说不清是哪台设备</b>：选「无法判断具体设备」，再选一下工序，写清现象即可——由到场的技术员来认设备。</li>
+  </ul>
+  <p class="note">故障分类<b>不需要普工选</b>。你只管把现象说清楚，分类由到场看过的技术员确认。</p>
+
+  <h3>3.3 撤回误报</h3>
+  <p>报错设备、机器自己恢复了、误操作提交——在<b>技术员到场之前</b>都可以撤回：打开自己那张工单，点「撤回」，填一句撤回原因，提交即可。</p>
+  <p>技术员<b>已经到现场</b>就不能再撤回了（人已白跑，请当面沟通）；这种情况下只有管理员能取消工单。</p>
+
+  <h3>3.4 查看进度</h3>
+  <p>工单列表里只显示<b>你自己报修</b>的单子。打开详情可以看到当前走到哪一步：</p>
+  <pre class="flow">报修 → 已接单 → 已到场 → 维修中 → 待试运行 → 已完成</pre>
+
+  <h3>3.5 评价（工单完成后）</h3>
+  <ol>
+    <li>打开带「待评价」标记的工单，对<b>维修质量、服务态度、响应速度</b>三项各打 1～5 星；</li>
+    <li>可以补充文字和照片（不会写就拍照）；</li>
+    <li>一张工单只能评一次，但<b>随时可以修改</b>。</li>
+  </ol>
+  <p class="note"><b>请放心如实打分</b>：技术员看不到单条评价的内容、照片，也看不到是谁评的，只能看到自己的综合平均分。评价是选填的，不评价也不影响工单完成。</p>
+
+  <h3>3.6 重新报修（没修好）</h3>
+  <p>已完成的工单如果问题又出现了：打开原工单点「重新报修」，设备和故障分类自动沿用，新单标注「重报自 WO-xxx」。几天内的重报本身就是「上次没修好」的信号，管理员看得到。</p>
+</section>
+
+<section class="card" id="tech">
+  <h2>四、技术员操作指南<span class="badge">维修</span><span class="badge">巡检</span><span class="badge">点检保养</span><span class="badge">技改</span></h2>
+
+  <h3>4.1 维修工单：从接单到结单</h3>
+  <p>工单详情顶部有一条<b>步骤条</b>，显示当前第几步、还差几步。每一步只需要点一个写着动作名字的按钮。</p>
+  <pre class="flow">待接单池 → ①我接这单 → ②我到现场了 → ③开始维修 → ④转试运行 → ⑤结单</pre>
+  <div class="step"><b class="no">1</b><b>接单</b>：在待接单池点「我接这单」。接了单就是你负责，<b>别的技术员不能推进你的单</b>；确实要换人，让管理员转派。</div>
+  <div class="step"><b class="no">2</b><b>到场</b>：到现场后点「我到现场了」。系统分开记录「报修到接单」和「接单到到场」的时长，所以接单≠到场，到了再点。</div>
+  <div class="step"><b class="no">3</b><b>核对报修信息</b>（到场后、开工前）：确认<b>实际故障设备</b>（报错了在这里改）和<b>故障分类</b>（三级代码：类别→部位→现象；普工原话保留在补充说明里）。两项都确认后才能点「开始维修」。开工后这一块默认不再显示；确实核对错了，用「返回」按钮回到这一步再改。</div>
+  <div class="step"><b class="no">4</b><b>维修中</b>：填写<b>诊断原因</b>和<b>维修方法</b>，登记<b>使用零件</b>（填错可删除重填），需要时拍<b>完成照片</b>。等配件、外协时切换到对应状态，之后可回「已到场」重新开工。</div>
+  <div class="step"><b class="no">5</b><b>待试运行</b>：只填<b>试运行结果</b>，三选一——<code>正常运行</code>可结单；<code>可运行但仍存在问题</code>必须写清遗留问题才能结单；<code>无法运行</code>不能结单，请返回维修。发现维修资料填错，点「维修资料有误？返回维修」。</div>
+  <div class="step"><b class="no">6</b><b>结单</b>：系统自动做「结单前检查」，<b>五样缺一不可</b>（见下表）。补齐后点「结单」，<b>不需要管理员在场</b>——验收由报修人的评价承担。</div>
+
+  <div class="table-scroll"><table>
+    <tr><th>结单必填</th><th>缺了会怎样</th></tr>
+    <tr><td>试运行结果</td><td>检查行直接定位到试运行选项</td></tr>
+    <tr><td>实际维修的设备</td><td>返回核对阶段补选</td></tr>
+    <tr><td>故障代码</td><td>返回核对阶段补选</td></tr>
+    <tr><td>诊断原因</td><td>自动退回维修中并聚焦对应输入框</td></tr>
+    <tr><td>维修方法</td><td>同上</td></tr>
+  </table></div>
+  <p class="warn">巡检转来的维修工单还必须<b>现场实时拍摄</b>「维修完成照片」（自动加设备、维修人、时间水印），相册旧图无效。</p>
+
+  <h3>4.2 日常巡检</h3>
+  <p>「设备巡检」刻意做得很轻：<b>扫码选设备 → 拍照 → 写发现</b>，没有逐项打勾的表。</p>
+  <ol>
+    <li>扫设备铭牌，选「登记巡检」；</li>
+    <li><b>必须用摄像头现场拍至少一张照片</b>（自动加设备、巡检人、时间水印；换了设备要重拍）；</li>
+    <li>写清发现了什么、怎么处理的；正常情况用快捷按钮（运行正常／已润滑保养／已紧固）；</li>
+    <li>当场解决不了的问题点「<b>转维修工单</b>」直接开单，巡检发现自动带进工单说明，两边互相关联。</li>
+  </ol>
+  <p>巡检记录会进设备档案的「巡检记录」标签页。</p>
+
+  <h3>4.3 点检与保养任务</h3>
+  <ol>
+    <li>到期任务自动出现在「结构化点检」和「设备保养」页，打开后<b>逐项</b>填写；数值项直接填数，超出上下限系统自动判「异常」；</li>
+    <li>异常项两种处理：当场说明并关闭，或<b>转维修工单</b>；</li>
+    <li>有拍照要求的项目按提示拍照；全部填完提交。到期任务不会重复生成，做完一条少一条。</li>
+  </ol>
+
+  <h3>4.4 技改任务（被分配时）</h3>
+  <div class="step"><b class="no">1</b><b>确认方案</b>：收到通知后打开任务，查看目的、验收标准和技术图纸，点「确认已阅读本版方案」。<b>所有执行人都确认后</b>主负责人才能继续。</div>
+  <div class="step"><b class="no">2</b><b>到场 → 开始施工</b>（主负责人操作）。</div>
+  <div class="step"><b class="no">3</b><b>逐项施工</b>：每个项目填写<b>实际执行结果</b>；要求拍照的项目必须<b>现场拍摄至少一张完工照片</b>。</div>
+  <div class="step"><b class="no">4</b><b>发现图纸与现场不符</b>：点「上报偏差」写明情况，任务进入待修订；管理员发新版方案后<b>所有人重新确认</b>（未改动项目已填的结果和照片保留）。</div>
+  <div class="step"><b class="no">5</b><b>提交审核</b>（主负责人操作）：全部项目完成后提交。管理员可能「退回整改」——按批注补做后再次提交；「审核通过」后整单生效，设备和产线数据自动更新。</div>
+  <p class="note">你只能看到<b>分配给自己</b>的技改任务。</p>
+
+  <h3>4.5 通知</h3>
+  <ul>
+    <li>手机 App 登录后自动开启业务通知：<b>新报修</b>（待接单池有新单）和<b>技改任务</b>（分配、修订、审核结果）；</li>
+    <li>通知栏点击技改通知会<b>直接打开对应任务</b>并自动标记已读；</li>
+    <li>收不到通知时：检查系统设置里是否允许了本 App 的通知；App 或手机重启后，打开一次 App 即恢复。</li>
+  </ul>
+
+  <h3>4.6 我的评分</h3>
+  <p>「总览」页可以看到<b>自己的</b>综合平均分和三个维度得分，用来了解自己哪方面需要改进。单条评价内容、照片、评价人对技术员<b>完全不可见</b>。</p>
+</section>
+
+<section class="card" id="admin">
+  <h2>五、管理员操作指南</h2>
+
+  <h3>5.1 成员管理</h3>
+  <ul>
+    <li><b>开户</b>：填工号、姓名、级别（1 普工／2 技术员／3 管理员）。系统自动生成初始密码，<b>只在创建成功那一次显示</b>，请当面或私下交给本人；对方首次登录强制改密；</li>
+    <li><b>重置密码</b>：生成新的一次性密码，并立即踢掉该账号的已有登录；</li>
+    <li><b>调级别／停用</b>：改动即刻生效，对方已登录的会话立即失效。账号<b>只能停用不能删除</b>（保护审计日志），最后一个启用的管理员不能被停用或降级。</li>
+  </ul>
+  <p class="note">建议：至少保持两名真实管理员；技改任务由不同管理员分别<b>发布</b>和<b>审核</b>。</p>
+
+  <h3>5.2 设备台账</h3>
+  <ul>
+    <li><b>建档</b>：录入标准名称、类别、类型代码、关键规格等，系统按「类型＋关键规格」自动分配永久设备码（如 <code>YSM-EXT-135-0001</code>）。<b>设备码、类型、关键规格建档后锁定</b>；名称、现场别名、品牌、负责人等随时可改；</li>
+    <li><b>Excel 整批导入</b>：下载台账模板 → 填写 → 上传预览 → 确认导入。<b>只要有一行「待核实」或错误，整批都不写入</b>，改完再传；</li>
+    <li><b>管理类型</b>：维护设备类型代码目录（已被使用的类型有保护）；</li>
+    <li><b>打印铭牌</b>：单台点行内「铭牌」；整线点「批量打印铭牌」选车间和产线，铭牌按工位顺序排好，拿着一叠走一条线贴完。</li>
+  </ul>
+  <p class="warn">⚠️ 批量打印前必须确认系统访问地址（<code>PUBLIC_BASE_URL</code>）已配置正确，否则二维码里存的是本机地址，手机扫了打不开。打印页有红色警告提示时不要印。</p>
+  <p><b>设备状态</b>：在用／闲置／停用／报废由你手工维护；「已报修」「维修中」由工单自动推算，不能手工选。维修期间改状态，改的是「结单后回到的状态」。</p>
+
+  <h3>5.3 产线组合</h3>
+  <ul>
+    <li><b>树维护</b>：逐级创建车间→产线→工序→机位；误建的<b>空</b>分支可整枝删除（存在任何设备安装、变动、工单或巡检历史时系统会阻止——历史数据绝不因删结构而丢失）；正常退役用「停用」；</li>
+    <li><b>组合导入</b>：下载组合模板，旧表整理成「一行一个机位」，上传预览无误后整批导入。设备匹配顺序为<b>永久编码 → 原资产编号 → 品牌＋出厂编号</b>，绝不按名称模糊匹配；匹配不上的行必须提供名称＋类别＋类型代码，由系统发新码。同一个文件不能重复导入两次；</li>
+    <li><b>正式运行后的安装／移动／拆除／替换</b>：一律走「技改任务」，不在树上直接改。</li>
+  </ul>
+
+  <h3>5.4 技改任务（发布与审核）</h3>
+  <p><b>发布：</b></p>
+  <ol>
+    <li>填写标题、改造目的、验收标准、优先级、计划时间，指定<b>主负责人</b>和协作技工；</li>
+    <li>「新增一项」编排项目：设备项目（安装／移动／拆除／替换／档案改造）或结构项目（新增／改名排序／调整所属／启停／安全删除）；免拍照的项目必须写明原因；</li>
+    <li>保存草稿 → <b>上传至少一份技术文件</b>（PDF、Office、图片、DWG/DXF、ZIP）→ 「发布」；</li>
+    <li>发布后所有执行人须确认方案。需要改方案就「修订重发」，旧确认作废、需重新确认，但未改项目的施工证据保留。</li>
+  </ol>
+  <p><b>审核：</b></p>
+  <ul>
+    <li>逐项查看结果与完工照片；「退回整改」需写明原因；</li>
+    <li>「审核通过」时系统重新校验现场状态，并在<b>一个事务</b>里应用全部项目——任何一项冲突（如目标机位已被占用）都会<b>整单回滚</b>，不会出现改了一半的中间状态；</li>
+    <li>执行期间受影响设备显示「改造中」、产线显示「调整中」（维修状态优先）。任务在任何未结束阶段都可以「取消」。</li>
+  </ul>
+
+  <h3>5.5 工单管理</h3>
+  <ul>
+    <li><b>指派／转派</b>：可直接把待接单工单派给某技术员，或把在修的单转给别人（转派留痕，不打断维修阶段）；</li>
+    <li><b>取消</b>：任何未结束阶段都能取消（技术员不能取消，普工只能在到场前撤回自己的单）。</li>
+  </ul>
+
+  <h3>5.6 点检与保养</h3>
+  <ul>
+    <li>建<b>模板</b>：逐项设置检查类型、标准、数值上下限、异常拍照要求；保养模板必须指定一／二／三级；</li>
+    <li>建<b>计划</b>：对象选设备或工序，周期支持每天、每周、间隔天数、固定一次、手工下发；到期自动生成任务且不重复；</li>
+    <li>跟踪完成率看「运营报表」。</li>
+  </ul>
+
+  <h3>5.7 故障代码</h3>
+  <p>三级结构：<b>类别 → 部位 → 现象</b>。每条可配置：处理建议、默认紧急程度、默认停机、必须拍照、是否进普工的「常见故障快捷按钮」。</p>
+  <p class="warn">⚠️ 系统预置的 23 条带「待确认」标记，是按旧系统整理的建议值。<b>请设备科尽快核对</b>——技术员结单只能从这个列表选，列表不准直接影响故障统计。已被工单使用的代码只能停用不能删除。</p>
+
+  <h3>5.8 服务评价</h3>
+  <p>查看全部评价（含文字、照片、评价人）和技术员综合排行。此页只有管理员可见。</p>
+
+  <h3>5.9 运营报表</h3>
+  <p>按日期范围统计：平均响应时长、平均维修时长、停机、重复报修；产线故障、故障类别和设备故障排行均可<b>下钻到具体工单</b>；全部结果可<b>导出 Excel</b>。</p>
+
+  <h3>5.10 操作日志</h3>
+  <p>系统内所有关键操作（谁、什么时候、干了什么）自动留痕，可在「操作日志」页查询审计。</p>
+</section>
+
+<section class="card" id="common">
+  <h2>六、通用功能说明</h2>
+
+  <h3>6.1 设备档案</h3>
+  <p>台账任意一行、或产线树上设备节点，点「档案」打开抽屉，四个标签页：</p>
+  <div class="table-scroll"><table>
+    <tr><th>标签页</th><th>内容</th></tr>
+    <tr><td>基本信息</td><td>档案字段（管理员可编辑，技术员只读）</td></tr>
+    <tr><td>位置变动</td><td>何时装在哪个机位、何时搬走、哪张单、谁提交谁审核</td></tr>
+    <tr><td>维修记录</td><td>历次故障现象、诊断、维修方法、试运行结果、停机时长、更换零件</td></tr>
+    <tr><td>档案修改</td><td>谁在何时把哪个字段从什么改成什么</td></tr>
+  </table></div>
+  <p>顶部常驻统计：维修次数、未结工单、累计停机分钟、更换零件数、位置变动次数、上次维修时间。</p>
+
+  <h3>6.2 设备状态一览</h3>
+  <div class="table-scroll"><table>
+    <tr><th>状态</th><th>维护方式</th></tr>
+    <tr><td>在用 / 闲置 / 停用 / 报废</td><td>管理员手工维护</td></tr>
+    <tr><td>已报修</td><td>系统自动：普工提交报修后</td></tr>
+    <tr><td>维修中</td><td>系统自动：技术员开工后，直到结单或取消</td></tr>
+    <tr><td>改造中（设备）/ 调整中（产线）</td><td>系统自动：影响生产的技改任务执行期间</td></tr>
+  </table></div>
+  <p>状态由<b>未结工单实时推算</b>：一台设备挂两张工单时，关掉一张不会提前恢复。产线树上维修中的机位整行标黄。</p>
+
+  <h3>6.3 二维码与铭牌</h3>
+  <ul>
+    <li><b>设备铭牌</b>：一台一码，印设备编码、现场叫法、标准名称、品牌型号。<b>刻意不印位置</b>——设备会搬，位置扫码看系统里的当前值；</li>
+    <li><b>工序二维码</b>：贴在产线入口或巡查点，扫码查看并筛选该工序设备。</li>
+  </ul>
+
+  <h3>6.4 照片规则</h3>
+  <ul>
+    <li>每条记录最多 <b>6 张</b>，单张不超过 <b>2MB</b>，系统自动压缩到长边 1600 像素；</li>
+    <li><b>巡检照片</b>和<b>巡检转维修的完成照片</b>必须现场实时拍摄，自动加水印，相册旧图无效；</li>
+    <li>报修／评价／维修过程照片可拍摄或从相册上传；</li>
+    <li>照片可见性跟随业务：评价照片只有评价人和管理员可见。</li>
+  </ul>
+</section>
+
+<section class="card" id="faq">
+  <h2>七、常见问题（FAQ）</h2>
+
+  <h3>Q1：打开 App 显示「网页无法打开」或一直转圈？</h3>
+  <p>手机没连公司 Wi-Fi、或服务器没启动。先确认手机 Wi-Fi，再找管理员确认服务器状态。</p>
+
+  <h3>Q2：忘记密码怎么办？</h3>
+  <p>找管理员重置。重置后拿到一次性新密码，登录后系统强制你再改一次。</p>
+
+  <h3>Q3：手机收不到新报修／技改通知？</h3>
+  <p>① 系统设置里允许本 App 的通知权限；② 打开一次 App 让通知服务重新启动；③ 小米等机型把 App 加入「自启动／省电白名单」，避免后台服务被杀。</p>
+
+  <h3>Q4：扫铭牌二维码打不开页面？</h3>
+  <p>铭牌可能是在访问地址配置错误时打印的。找管理员确认地址配置后重新打印该批铭牌；急用时先手动选设备报修。</p>
+
+  <h3>Q5：为什么点「结单」被拒绝？</h3>
+  <p>差五必填之一：试运行结果／实际设备／故障代码／诊断原因／维修方法。看「结单前检查」的红色缺项行，点它直接跳到要补的地方。巡检转来的单还要现场拍完工照片。</p>
+
+  <h3>Q6：设备工单都关了，状态怎么还是「维修中」？</h3>
+  <p>这台设备还挂着<b>另一张</b>未结工单。状态由全部未结工单推算，全部结束才恢复。</p>
+
+  <h3>Q7：报修撤不回了？</h3>
+  <p>技术员已到场就不能撤回。请当面沟通，需要作废时由管理员取消工单。</p>
+
+  <h3>Q8：普工为什么看不到别人的工单／台账？</h3>
+  <p>设计如此：一级账号只看自己报修的单。需要更多权限找管理员调级别。</p>
+
+  <h3>Q9：评价会被技术员看到吗？</h3>
+  <p>不会。技术员看不到评价内容、照片和评价人，只能看到自己的综合平均分。请如实打分。</p>
+
+  <h3>Q10：技改任务里为什么不能开工？</h3>
+  <p>所有执行人都点了「确认已阅读本版方案」之后，主负责人才能到场开工。方案被修订后需要<b>全员重新确认</b>。</p>
+
+  <h3>Q11：导入 Excel 一直不成功？</h3>
+  <p>预览里只要有一行错误（含「待核实」），整批都不会写入——这是防止半批数据入库的保护。按预览提示改完那几行再传。组合文件重复导入会被文件去重拦截。</p>
+</section>
+
+<section class="card" id="rules">
+  <h2>八、使用注意事项</h2>
+  <ol>
+    <li><b>一人一号，不共用账号</b>——工单归属、评价归属、审计日志都跟着账号走，共用账号出了问题说不清；</li>
+    <li><b>密码自己保管</b>，至少 12 位；管理员和系统都查不到你的明文密码；</li>
+    <li>公用电脑上用完请点「更多 → 退出」；</li>
+    <li>手机换新或离职时告知管理员<b>停用账号</b>（停用即刻生效，历史记录保留）；</li>
+    <li>巡检、完工照片必须<b>现场实拍</b>，这是留证要求，相册旧图系统不认；</li>
+    <li>报修时<b>说清现象</b>比选对分类重要——分类交给到场的技术员；</li>
+    <li>看到界面上「待确认」「需拍照」「待评价」等标记，按提示处理即可，系统会在关键步骤把该做的事拦在前面。</li>
+  </ol>
+</section>
+
+</main>
+
+<footer>
+  本指南对应系统 2026-08 版本，与 <code>docs/操作指南.md</code> 内容一致。功能以实际界面为准；指南与界面不符时请反馈管理员更新文档。
+</footer>
+
+</body>
+</html>
